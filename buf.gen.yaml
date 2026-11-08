@@ -1,0 +1,12 @@
+# Regenerate with: go tool -modfile=tools/go.mod buf generate
+# The generators are pinned to stable releases so generated code never needs
+# a pre-release protobuf runtime.
+version: v2
+clean: true
+plugins:
+  - local: ["go", "run", "google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12"]
+    out: gen
+    opt: paths=source_relative
+  - local: ["go", "run", "google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2"]
+    out: gen
+    opt: paths=source_relative

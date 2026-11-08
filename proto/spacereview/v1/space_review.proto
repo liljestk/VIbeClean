@@ -1,0 +1,221 @@
+syntax = "proto3";
+
+package spacereview.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/liljestk/VIbeClean/gen/spacereview/v1;spacereviewv1";
+
+// SpaceReviewService reads saved disk-usage history, compares captures and
+// starts new captures. Every user interface and the MCP server use the same
+// operations, so a new front end needs only this contract.
+//
+// The server listens on a loopback address and expects the request metadata
+// "authorization: Bearer <token>", using the token from the server's token file.
+service SpaceReviewService {
+  // GetServerInfo returns the server version and the index it serves.
+  rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
+  // ListDrives returns current readings for each local fixed drive.
+  rpc ListDrives(ListDrivesRequest) returns (ListDrivesResponse);
+  // ListScopes returns the latest capture of every saved scope, without records.
+  rpc ListScopes(ListScopesRequest) returns (ListScopesResponse);
+  // GetLatest returns the latest capture of one scope with its records.
+  rpc GetLatest(GetLatestRequest) returns (GetLatestResponse);
+  // CompareCaptures ranks changes between the latest capture and a baseline.
+  rpc CompareCaptures(CompareCapturesRequest) returns (CompareCapturesResponse);
+  // Capture measures a scope and saves it. The stream reports progress and
+  // ends with the saved snapshot. Cancelling the call cancels the capture.
+  rpc Capture(CaptureRequest) returns (stream CaptureResponse);
+}
+
+// ScopeKind tells file captures from Docker captures.
+enum ScopeKind {
+  SCOPE_KIND_UNSPECIFIED = 0;
+  SCOPE_KIND_FILES = 1;
+  SCOPE_KIND_DOCKER = 2;
+}
+
+// Series groups the readings in a capture.
+enum Series {
+  SERIES_UNSPECIFIED = 0;
+  SERIES_FOLDERS = 1;
+  SERIES_SUBFOLDERS = 2;
+  SERIES_REVIEW_CANDIDATES = 3;
+  SERIES_LARGE_FILES = 4;
+  SERIES_DOCKER_TOTALS = 5;
+  SERIES_PROJECTS = 6;
+  SERIES_VOLUMES = 7;
+  SERIES_CONTAINERS = 8;
+  SERIES_IMAGES = 9;
+  SERIES_BUILD_CACHE = 10;
+}
+
+// Direction filters changes by sign.
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  DIRECTION_BOTH = 1;
+  DIRECTION_GROWTH = 2;
+  DIRECTION_FREED = 3;
+}
+
+// Drive is one reading of a local fixed drive.
+message Drive {
+  string root = 1;
+  string volume_id = 2;
+  int64 total_bytes = 3;
+  int64 free_bytes = 4;
+  uint64 journal_id = 5;
+  int64 next_usn = 6;
+}
+
+// Coverage describes what a capture measured and what it could not read.
+message Coverage {
+  ScopeKind scope_kind = 1;
+  repeated Drive drives = 2;
+  repeated string gaps = 3;
+  int64 files_checked = 4;
+  int64 repeated_links = 5;
+  int64 online_only = 6;
+  int64 skipped_links = 7;
+  int64 estimated_dirs = 8;
+  bool subfolders = 9;
+  string kind = 10;
+  string engine = 11;
+}
+
+// Record is one reading. Bytes is -1 when the size is unknown.
+message Record {
+  Series series = 1;
+  string key = 2;
+  string name = 3;
+  string path = 4;
+  string kind = 5;
+  int64 bytes = 6;
+  int64 files = 7;
+  google.protobuf.Timestamp modified = 8;
+  bool directory = 9;
+  string activity = 10;
+  string detail = 11;
+  string group = 12;
+  bool idle = 13;
+  int64 reclaimable_bytes = 14;
+  bool partial = 15;
+}
+
+// Snapshot is one saved capture.
+message Snapshot {
+  int64 id = 1;
+  string scope_id = 2;
+  string label = 3;
+  google.protobuf.Timestamp captured_at = 4;
+  Coverage coverage = 5;
+  repeated Record records = 6;
+}
+
+// Change is one ranked difference between two captures.
+message Change {
+  Series series = 1;
+  Record before = 2;
+  Record after = 3;
+  int64 delta_bytes = 4;
+  // True when one side was below the tracking floor, so delta_bytes is a minimum.
+  bool minimum_magnitude = 5;
+}
+
+// DriveDelta is the measured free-space movement of one drive.
+message DriveDelta {
+  string root = 1;
+  int64 used_delta_bytes = 2;
+  int64 free_bytes = 3;
+}
+
+// GetServerInfoRequest has no fields.
+message GetServerInfoRequest {}
+
+// GetServerInfoResponse identifies the server.
+message GetServerInfoResponse {
+  string version = 1;
+  string index_path = 2;
+}
+
+// ListDrivesRequest has no fields.
+message ListDrivesRequest {}
+
+// ListDrivesResponse lists current fixed-drive readings.
+message ListDrivesResponse {
+  repeated Drive drives = 1;
+}
+
+// ListScopesRequest has no fields.
+message ListScopesRequest {}
+
+// ListScopesResponse lists the latest capture of each scope, newest first.
+message ListScopesResponse {
+  repeated Snapshot scopes = 1;
+}
+
+// GetLatestRequest selects a scope by scope ID, label ("Quick review",
+// "Docker") or absolute folder path.
+message GetLatestRequest {
+  string scope = 1;
+  // Unspecified returns every series.
+  Series series = 2;
+  // Words to match, or "path:" followed by an absolute folder.
+  string query = 3;
+  // 0 returns every matching record.
+  int32 limit = 4;
+}
+
+// GetLatestResponse carries the latest capture and whether it looks out of date.
+message GetLatestResponse {
+  Snapshot snapshot = 1;
+  // True when drive or journal readings suggest the capture is out of date.
+  bool refresh_recommended = 2;
+}
+
+// CompareCapturesRequest selects a scope and filters the ranked changes.
+message CompareCapturesRequest {
+  string scope = 1;
+  // 0 compares with the previous capture.
+  int32 days = 2;
+  // Unspecified returns every series.
+  Series series = 3;
+  int64 minimum_bytes = 4;
+  Direction direction = 5;
+  string query = 6;
+  // 0 returns every matching change.
+  int32 limit = 7;
+}
+
+// CompareCapturesResponse holds both endpoints and the ranked changes.
+message CompareCapturesResponse {
+  Snapshot latest = 1;
+  // Absent until the scope has two captures.
+  Snapshot baseline = 2;
+  bool short_window = 3;
+  int32 omitted_coverage_changes = 4;
+  repeated DriveDelta drive_changes = 5;
+  repeated Change changes = 6;
+}
+
+// CaptureRequest names the scope to measure: "Quick review", "Docker", a fixed
+// drive like "C:\" or an absolute local folder.
+message CaptureRequest {
+  string scope = 1;
+  // Optional category for a folder scope.
+  string kind = 2;
+}
+
+// CaptureResponse is one event in a capture stream.
+message CaptureResponse {
+  // Progress events arrive while the capture runs; the last event is the snapshot.
+  oneof event {
+    CaptureProgress progress = 1;
+    Snapshot snapshot = 2;
+  }
+}
+
+// CaptureProgress reports how far a capture has come.
+message CaptureProgress {
+  int64 files_checked = 1;
+}

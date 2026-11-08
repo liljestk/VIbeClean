@@ -1,0 +1,14 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+    - COMMENTS
+  except:
+    # Fields are documented where their meaning is not obvious from the name.
+    - COMMENT_FIELD
+    - COMMENT_ENUM_VALUE
+breaking:
+  use:
+    - WIRE_JSON
