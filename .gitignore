@@ -1,0 +1,21 @@
+# Build output
+*.exe
+*.exe~
+/dist/
+/bin/
+
+# Test and coverage output
+*.test
+*.out
+coverage.*
+
+# Local Space Review data
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+diagnostics/
+
+# Scanner and editor state
+.scannerwork/
+.idea/
+.vscode/
