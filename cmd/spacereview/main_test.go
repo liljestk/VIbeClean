@@ -20,6 +20,14 @@ func TestParseModesAndValidation(t *testing.T) {
 		!slices.Equal(opts.mcpArgs(), []string{"--mcp", "--connect", "127.0.0.1:1"}) {
 		t.Fatalf("remote MCP options: %+v, %v", opts, err)
 	}
+	opts, err = parse([]string{"--connect", "127.0.0.1:1", "--index", "history.sqlite3"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launched, err := parse(opts.mcpArgs(), io.Discard)
+	if err != nil || launched.tokenFile != opts.tokenFile {
+		t.Fatalf("MCP launch lost the API token location for the selected index: %+v, %v", launched, err)
+	}
 	opts, err = parse(nil, io.Discard)
 	if err != nil || opts.mode != modeDesktop || opts.custom || !slices.Equal(opts.mcpArgs(), []string{"--mcp"}) {
 		t.Fatalf("default options: %+v, %v", opts, err)
@@ -42,7 +50,7 @@ func TestParseModesAndValidation(t *testing.T) {
 func TestFrontEndsUseOnlyTheContract(t *testing.T) {
 	const module = "github.com/liljestk/VIbeClean/"
 	forbidden := []string{"internal/store", "internal/scan", "internal/docker", "internal/volume", "internal/service/local"}
-	for _, front := range []string{"internal/desktop", "internal/mcpserver", "internal/rpc"} {
+	for _, front := range []string{"internal/ui", "internal/mcpserver", "internal/rpc"} {
 		output, err := exec.Command("go", "list", "-deps", module+front).CombinedOutput()
 		if err != nil {
 			t.Fatalf("go list %s: %v\n%s", front, err, output)

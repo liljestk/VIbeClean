@@ -131,7 +131,7 @@ func TestPortableMCPPersistsRealChanges(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
-	if !slices.Equal(names, []string{"capture_storage", "largest_storage_items", "list_drives", "list_storage_scopes", "storage_changes"}) {
+	if !slices.Equal(names, []string{"capture_storage", "largest_storage_items", "list_drives", "list_storage_scopes", "storage_breakdown", "storage_changes"}) {
 		t.Fatalf("tools = %v", names)
 	}
 	baseline := callTool[mcpserver.ScopeInfo](t, ctx, first, "capture_storage", mcpserver.CaptureInput{Scope: root})
@@ -410,7 +410,7 @@ func TestPortableLiveDocker(t *testing.T) {
 	report := callTool[mcpserver.LatestOutput](t, ctx, session, "largest_storage_items",
 		mcpserver.LatestInput{Scope: saved.Scope, Series: model.DockerTotals})
 	for _, key := range []string{"host", model.Images, model.Containers, model.Volumes, model.BuildCache} {
-		if !slices.ContainsFunc(report.Items, func(row model.Record) bool { return row.Key == key }) {
+		if !slices.ContainsFunc(report.Items, func(row mcpserver.Item) bool { return row.Key == key }) {
 			t.Fatalf("missing %s in %+v", key, report.Items)
 		}
 	}

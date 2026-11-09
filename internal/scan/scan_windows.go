@@ -81,7 +81,7 @@ func Capture(ctx context.Context, req Request) (_ model.Snapshot, err error) {
 	}
 	s := &w.snapshot
 	s.Scope, s.Label = model.ScopeKey(scope, startDisks), scope
-	s.Coverage = model.Coverage{ScopeKind: model.ScopeFiles, Kind: kind, Subfolders: true}
+	s.Coverage = model.Coverage{ScopeKind: model.ScopeFiles, Kind: kind, Subfolders: true, Labels: model.LabelsVersion}
 
 	stage = "discover"
 	phaseStarted = time.Now()
@@ -109,6 +109,7 @@ func Capture(ctx context.Context, req Request) (_ model.Snapshot, err error) {
 	phaseStarted = time.Now()
 	s.Coverage.Estimated = w.reader.estimated
 	s.Coverage.Drives = volume.States(roots)
+	w.addCategories()
 	spent.finalize = time.Since(phaseStarted)
 	if model.ScopeKey(scope, s.Coverage.Drives) != s.Scope || drivesReplaced(startDisks, s.Coverage.Drives) {
 		return model.Snapshot{}, model.Conflict("a drive changed during the scan; scan again for a comparable snapshot")
@@ -128,7 +129,7 @@ func resolve(scope, kind string) (string, string, error) {
 		}
 		scope = path
 		if kind == "" {
-			kind = classify(filepath.Base(path), model.FilesKind, true, filepath.Dir(path) == model.VolumeRoot(path))
+			kind = kindOfPath(path)
 		}
 	}
 	if kind == "" {
@@ -157,6 +158,36 @@ type walker struct {
 	drive        string
 	progress     func(int64)
 	lastProgress time.Time
+	// categories totals the files of each category.
+	categories map[string]*model.Record
+}
+
+// count adds a file to its category total.
+func (w *walker) count(kind string, size int64) {
+	total := w.categories[kind]
+	if total == nil {
+		if w.categories == nil {
+			w.categories = make(map[string]*model.Record)
+		}
+		total = &model.Record{Series: model.Categories, Key: kind, Name: kind, Kind: kind}
+		w.categories[kind] = total
+	}
+	total.Bytes += size
+	total.Files++
+}
+
+// addCategories adds the category totals to the snapshot.
+func (w *walker) addCategories() {
+	kinds := make([]string, 0, len(w.categories))
+	for kind := range w.categories {
+		kinds = append(kinds, kind)
+	}
+	slices.Sort(kinds)
+	for _, kind := range kinds {
+		if total := w.categories[kind]; total.Bytes > 0 {
+			w.snapshot.Records = append(w.snapshot.Records, *total)
+		}
+	}
 }
 
 func (w *walker) log(started time.Time, err error, stage, scopeType string, spent timings) {
@@ -198,6 +229,12 @@ func (w *walker) target(t target) {
 		}
 	})
 	w.reader.addGap(&w.snapshot.Coverage, parent, err)
+	if t.Split {
+		// A scope that is itself a project or game labels everything in it.
+		if l, ok := contentLabel(entries, t.Kind); ok {
+			t.Kind = l.kind
+		}
+	}
 	slices.SortFunc(entries, func(a, b dirEntry) int { return strings.Compare(a.Name, b.Name) })
 	for _, entry := range entries {
 		if w.ctx.Err() != nil {
@@ -214,20 +251,27 @@ func (w *walker) entry(t target, parent string, entry dirEntry) {
 		return
 	}
 	path := filepath.Join(parent, entry.Name)
-	category := t.Kind
+	l := label{kind: t.Kind}
 	if t.Split {
-		category = classify(entry.Name, t.Kind, entry.directory(), parent == model.VolumeRoot(parent))
+		l = classify(entry.Name, placeOf(parent, t.Kind), entry.directory())
 	}
-	bucket := pathRecord(path, category, entry)
-	var firstReview *model.Record
-	if model.IsCandidate(category) {
-		firstReview = &bucket
-	}
+	bucket := pathRecord(path, l.kind, entry)
+	bucket.Detail = l.why
 	walked := &tree{w: w, bucket: &bucket}
+	root := branch{path: path, lower: model.NormalizedKey(path), kind: l.kind, entry: entry}
+	var firstReview *model.Record
+	if model.IsCandidate(l.kind) {
+		firstReview = &bucket
+		root.review = firstReview
+	}
+	if l.unit {
+		root.unit = walked.newUnit(path, l, entry)
+	}
 	if entry.directory() {
-		walked.walk(branch{path: path, kind: category, review: firstReview})
+		walked.walk(root)
 	} else {
-		w.measure(entry, parent, category, &bucket, firstReview, nil)
+		root.path, root.lower = parent, model.NormalizedKey(parent)
+		w.measure(entry, &root, &bucket)
 	}
 	if bucket.Bytes > 0 {
 		w.snapshot.Records = append(w.snapshot.Records, bucket)
@@ -248,10 +292,15 @@ func (w *walker) entry(t target, parent string, entry dirEntry) {
 			w.snapshot.Records = append(w.snapshot.Records, candidate)
 		}
 	}
+	for _, item := range walked.units {
+		if item.Bytes >= units.MiB {
+			w.snapshot.Records = append(w.snapshot.Records, *item)
+		}
+	}
 }
 
-// measure adds one file to the readings that contain it.
-func (w *walker) measure(entry dirEntry, parent, kind string, bucket, review, childFolder *model.Record) {
+// measure adds one file to the readings that contain it and to its category.
+func (w *walker) measure(entry dirEntry, at *branch, bucket *model.Record) {
 	coverage := &w.snapshot.Coverage
 	coverage.Checked++
 	size := entry.Bytes
@@ -267,23 +316,33 @@ func (w *walker) measure(entry dirEntry, parent, kind string, bucket, review, ch
 		}
 	}
 	addAllocation(bucket, size, entry.Modified)
-	if review != nil && review != bucket {
-		addAllocation(review, size, entry.Modified)
+	if at.review != nil && at.review != bucket {
+		addAllocation(at.review, size, entry.Modified)
 	}
-	if childFolder != nil {
-		addAllocation(childFolder, size, entry.Modified)
+	if at.child != nil {
+		addAllocation(at.child, size, entry.Modified)
 	}
+	if at.unit != nil {
+		addAllocation(at.unit, size, entry.Modified)
+	}
+	kind := at.kind
+	// Files of a megabyte or more get their own label, such as a log or a
+	// virtual disk inside an app folder; smaller files count with their folder.
+	if bucket.Directory && size >= units.MiB {
+		kind = classify(entry.Name, place{kind: at.kind, lower: at.lower}, false).kind
+	}
+	w.count(kind, size)
 	if size < model.FileFloor {
 		return
 	}
 	item := *bucket
 	if bucket.Directory {
-		item = pathRecord(filepath.Join(parent, entry.Name), classify(entry.Name, kind, false, false), entry)
+		item = pathRecord(filepath.Join(at.path, entry.Name), kind, entry)
 		item.Bytes, item.Files = size, 1
 	}
 	item.Series = model.LargeFiles
 	w.snapshot.Records = append(w.snapshot.Records, item)
-	if review == nil && model.IsCandidate(item.Kind) {
+	if at.review == nil && model.IsCandidate(item.Kind) {
 		item.Series = model.Candidates
 		w.snapshot.Records = append(w.snapshot.Records, item)
 	}
@@ -291,9 +350,11 @@ func (w *walker) measure(entry dirEntry, parent, kind string, bucket, review, ch
 
 // branch is a folder waiting to be listed inside a top-level reading.
 type branch struct {
-	path, kind string
-	review     *model.Record // The review candidate that contains this folder.
-	child      *model.Record // The immediate subfolder of the reading that contains it.
+	path, lower, kind string
+	entry             dirEntry
+	review            *model.Record // The review candidate that contains this folder.
+	child             *model.Record // The immediate subfolder of the reading that contains it.
+	unit              *model.Record // The innermost labeled folder that contains it.
 }
 
 // tree walks the folders inside one top-level reading without recursion.
@@ -301,8 +362,10 @@ type tree struct {
 	w        *walker
 	bucket   *model.Record
 	pending  []branch
+	listing  []dirEntry
 	reviews  []*model.Record
 	children []*model.Record
+	units    []*model.Record
 }
 
 func (t *tree) walk(root branch) {
@@ -311,38 +374,84 @@ func (t *tree) walk(root branch) {
 		current := t.pending[len(t.pending)-1]
 		t.pending = t.pending[:len(t.pending)-1]
 		t.w.mark()
-		err := t.w.reader.entries(t.w.ctx, current.path, model.FileFloor, func(child dirEntry) {
+		// The whole listing is read first, so markers such as a .git folder
+		// label the folder before any of its files are counted.
+		t.listing = t.listing[:0]
+		err := t.w.reader.entries(t.w.ctx, current.path, units.MiB, func(child dirEntry) {
+			t.listing = append(t.listing, child)
+		})
+		t.w.reader.addGap(&t.w.snapshot.Coverage, current.path, err)
+		t.relabel(&current)
+		for _, child := range t.listing {
 			switch {
 			case child.link():
 				t.w.snapshot.Coverage.Links++
 			case child.directory():
-				t.descend(current, child)
+				t.descend(&current, child)
 			default:
-				t.w.measure(child, current.path, current.kind, t.bucket, current.review, current.child)
+				t.w.measure(child, &current, t.bucket)
 			}
-		})
-		t.w.reader.addGap(&t.w.snapshot.Coverage, current.path, err)
+		}
+	}
+}
+
+// relabel applies what a folder's listing shows about it, such as a version
+// control folder that marks a project, to the folder and its readings.
+func (t *tree) relabel(current *branch) {
+	l, ok := contentLabel(t.listing, current.kind)
+	if !ok {
+		return
+	}
+	current.kind = l.kind
+	for _, item := range []*model.Record{t.bucket, current.child, current.review, current.unit} {
+		if item != nil && item.Path == current.path {
+			item.Kind, item.Detail = l.kind, l.why
+		}
+	}
+	if current.review == nil && model.IsCandidate(l.kind) {
+		item := pathRecord(current.path, l.kind, current.entry)
+		item.Detail = l.why
+		current.review = &item
+		t.reviews = append(t.reviews, current.review)
+	}
+	if l.unit && (current.unit == nil || (current.unit.Kind != l.kind && current.unit.Path != current.path)) {
+		current.unit = t.newUnit(current.path, l, current.entry)
 	}
 }
 
 // descend queues a subfolder, starting a subfolder reading for immediate
-// children and a review candidate for the first cleanup category on the way down.
-func (t *tree) descend(current branch, child dirEntry) {
+// children, a review candidate for the first cleanup category on the way
+// down, and a labeled folder where a program, game or project starts.
+func (t *tree) descend(current *branch, child dirEntry) {
 	path := filepath.Join(current.path, child.Name)
-	kind := classify(child.Name, current.kind, true, false)
-	next := branch{path: path, kind: kind, review: current.review, child: current.child}
+	l := classify(child.Name, place{kind: current.kind, lower: current.lower}, true)
+	next := branch{path: path, lower: current.lower + `\` + strings.ToLower(child.Name), kind: l.kind, entry: child,
+		review: current.review, child: current.child, unit: current.unit}
 	if current.path == t.bucket.Path {
-		item := pathRecord(path, kind, child)
-		item.Series = model.Subfolders
+		item := pathRecord(path, l.kind, child)
+		item.Series, item.Detail = model.Subfolders, l.why
 		next.child = &item
 		t.children = append(t.children, next.child)
 	}
-	if next.review == nil && model.IsCandidate(kind) {
-		item := pathRecord(path, kind, child)
+	if next.review == nil && model.IsCandidate(l.kind) {
+		item := pathRecord(path, l.kind, child)
+		item.Detail = l.why
 		next.review = &item
 		t.reviews = append(t.reviews, next.review)
 	}
+	if l.unit && (next.unit == nil || next.unit.Kind != l.kind) {
+		next.unit = t.newUnit(path, l, child)
+	}
 	t.pending = append(t.pending, next)
+}
+
+// newUnit starts a labeled folder. Its files count toward it until a
+// folder of another labeled category starts inside it.
+func (t *tree) newUnit(path string, l label, entry dirEntry) *model.Record {
+	item := pathRecord(path, l.kind, entry)
+	item.Series, item.Name, item.Detail = model.Labeled, filepath.Base(path), l.why
+	t.units = append(t.units, &item)
+	return &item
 }
 
 func addAllocation(item *model.Record, size, modified int64) {

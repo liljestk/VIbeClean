@@ -28,12 +28,14 @@ const (
 	ToolChanges    = "storage_changes"
 	ToolCapture    = "capture_storage"
 	ToolDrives     = "list_drives"
+	ToolBreakdown  = "storage_breakdown"
 )
 
 const (
-	defaultRows = 20
-	maxRows     = 100
-	maxMinMiB   = 1 << 40
+	defaultRows      = 20
+	defaultBreakdown = 10
+	maxRows          = 100
+	maxMinMiB        = 1 << 40
 )
 
 // ScopeInfo summarizes one capture.
@@ -61,23 +63,74 @@ func scopeInfo(s model.Snapshot) ScopeInfo {
 // LatestInput selects the latest records of a scope.
 type LatestInput struct {
 	Scope  string `json:"scope,omitempty" jsonschema:"Saved scope ID, label or absolute folder. Defaults to Quick review."`
-	Series string `json:"series,omitempty" jsonschema:"Folders, Subfolders, Review candidates, Large files, Projects, Volumes, Containers, Images, Build cache, or Docker totals."`
+	Series string `json:"series,omitempty" jsonschema:"Files: Folders, Subfolders, Categories, Review candidates, Apps, games & projects, or Large files. Docker: Projects, Volumes, Containers, Images, Build cache, or Docker totals."`
 	Query  string `json:"query,omitempty" jsonschema:"Filter by words, or use path: followed by an absolute folder to filter its contents."`
 	Limit  int    `json:"limit,omitempty" jsonschema:"Number of rows, default 20, maximum 100."`
 }
 
+// Item is one reading. File readings carry the removal level of their category.
+type Item struct {
+	model.Record
+	Removal model.Removal `json:"removal,omitempty"`
+}
+
+func fileItems(records []model.Record, scopeKind string, limit int) []Item {
+	result := make([]Item, 0, min(len(records), limit))
+	for _, record := range records[:min(len(records), limit)] {
+		item := Item{Record: record}
+		if scopeKind == model.ScopeFiles && record.Kind != "" {
+			item.Removal = model.RemovalOf(record.Kind)
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
 // LatestOutput lists the largest records of one series.
 type LatestOutput struct {
-	Snapshot           ScopeInfo      `json:"snapshot"`
-	Series             string         `json:"series"`
-	RefreshRecommended bool           `json:"refresh_recommended,omitempty"`
-	Items              []model.Record `json:"items"`
+	Snapshot           ScopeInfo `json:"snapshot"`
+	Series             string    `json:"series"`
+	RefreshRecommended bool      `json:"refresh_recommended,omitempty"`
+	Items              []Item    `json:"items"`
+}
+
+// BreakdownInput selects the file capture to summarize.
+type BreakdownInput struct {
+	Scope string `json:"scope,omitempty" jsonschema:"Saved scope ID, label or absolute folder. Defaults to Quick review. A drive capture gives the fullest picture."`
+	Limit int    `json:"limit,omitempty" jsonschema:"Number of review candidates and labeled folders to list, default 10, maximum 100."`
+}
+
+// RemovalTotal is the space of every category with one removal level.
+type RemovalTotal struct {
+	Removal model.Removal `json:"removal"`
+	Bytes   int64         `json:"bytes"`
+	Note    string        `json:"note"`
+}
+
+// CategoryTotal is the space one category uses. Each file counts toward one category.
+type CategoryTotal struct {
+	Category string        `json:"category"`
+	Bytes    int64         `json:"bytes"`
+	Files    int64         `json:"files"`
+	Removal  model.Removal `json:"removal"`
+	Note     string        `json:"note"`
+}
+
+// BreakdownOutput summarizes a file capture by removal level and category.
+type BreakdownOutput struct {
+	Snapshot           ScopeInfo       `json:"snapshot"`
+	RefreshRecommended bool            `json:"refresh_recommended,omitempty"`
+	Notice             string          `json:"notice,omitempty"`
+	Removals           []RemovalTotal  `json:"removal_totals"`
+	Categories         []CategoryTotal `json:"categories"`
+	Candidates         []Item          `json:"largest_review_candidates"`
+	Labeled            []Item          `json:"largest_apps_games_projects"`
 }
 
 // ChangesInput selects and filters a comparison.
 type ChangesInput struct {
 	Scope     string `json:"scope,omitempty" jsonschema:"Saved scope ID, label or absolute folder. Defaults to Quick review."`
-	Series    string `json:"series,omitempty" jsonschema:"Files: Folders, Subfolders, Review candidates, Large files. Docker: Docker totals, Projects, Volumes, Containers, Images, Build cache."`
+	Series    string `json:"series,omitempty" jsonschema:"Files: Folders, Subfolders, Review candidates, Apps, games & projects, Large files. Docker: Docker totals, Projects, Volumes, Containers, Images, Build cache."`
 	Days      int    `json:"days,omitempty" jsonschema:"0 compares the previous scan. Use 1, 7, 30, or 90 for longer periods, up to 120."`
 	MinMiB    int64  `json:"minimum_mib,omitempty" jsonschema:"Minimum absolute change, default 256 MiB."`
 	Direction string `json:"direction,omitempty" jsonschema:"both, growth, or freed."`
@@ -142,7 +195,7 @@ func measure(next mcp.MethodHandler) mcp.MethodHandler {
 		if params, ok := request.GetParams().(*mcp.CallToolParamsRaw); ok && params != nil {
 			tool := "unknown"
 			switch params.Name {
-			case ToolListScopes, ToolLargest, ToolChanges, ToolCapture, ToolDrives:
+			case ToolListScopes, ToolLargest, ToolChanges, ToolCapture, ToolDrives, ToolBreakdown:
 				tool = params.Name
 			}
 			attrs = append(attrs, slog.String("tool", tool))
@@ -160,9 +213,12 @@ func measure(next mcp.MethodHandler) mcp.MethodHandler {
 // New builds the MCP server over a backend.
 func New(backend service.Backend) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: Name, Version: buildinfo.Version}, &mcp.ServerOptions{
-		Instructions: "Local Windows disk and Docker usage. Compare captures of the same scope. " +
+		Instructions: "Use list_drives for live free space and largest_storage_items for saved folder usage or large files. Report the scan time. " +
+			"For coding-session storage changes, scan the same project folder before and after. storage_changes with days=0 compares the last two captures. Report both times and check they cover the requested session. " +
 			"Drive deltas are actual free-space measurements. Docker categories and Windows disk allocations can overlap. " +
-			"An absent large-file or subfolder reading is below the 64 MiB tracking cutoff or missing. Such changes are conservative bounds.",
+			"An absent large-file or subfolder reading is below the 64 MiB tracking cutoff or missing. Such changes are conservative bounds. " +
+			"For cleanup questions, use storage_breakdown on a drive capture. Categories and removal levels are heuristics based on paths and marker files. " +
+			"Lead with Safe to clear, ask the user to look inside Check first items, and suggest uninstalling programs and games instead of deleting their folders. Never suggest deleting Keep items.",
 	})
 	server.AddReceivingMiddleware(measure)
 	tools := &toolset{backend: backend}
@@ -171,6 +227,9 @@ func New(backend service.Backend) *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{Name: ToolDrives, Description: "Read current free space and identity of each local fixed drive.", Annotations: read}, tools.listDrives)
 	mcp.AddTool(server, &mcp.Tool{Name: ToolLargest, Description: "Read the largest entries in the latest saved capture.", Annotations: read}, tools.largest)
 	mcp.AddTool(server, &mcp.Tool{Name: ToolChanges, Description: "Rank the biggest storage gains or losses between saved captures.", Annotations: read}, tools.changes)
+	mcp.AddTool(server, &mcp.Tool{Name: ToolBreakdown, Description: "Summarize the latest file capture by category and removal level " +
+		"(Safe to clear, Check first, Uninstall, Keep), with the largest cleanup candidates and the largest programs, games and projects.",
+		Annotations: read}, tools.breakdown)
 	no := false
 	mcp.AddTool(server, &mcp.Tool{Name: ToolCapture, Description: "Measure a local file or Docker scope and save a SQLite snapshot. Reads storage metadata.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no, OpenWorldHint: &no}}, tools.capture)
@@ -211,7 +270,39 @@ func (t *toolset) largest(ctx context.Context, _ *mcp.CallToolRequest, input Lat
 	}
 	items := model.RecordsIn(latest.Snapshot, series)
 	return nil, LatestOutput{Snapshot: scopeInfo(latest.Snapshot), Series: series, RefreshRecommended: latest.RefreshRecommended,
-		Items: append([]model.Record{}, items[:min(len(items), limitRows(input.Limit))]...)}, nil
+		Items: fileItems(items, latest.Snapshot.Coverage.ScopeKind, limitRows(input.Limit))}, nil
+}
+
+func (t *toolset) breakdown(ctx context.Context, _ *mcp.CallToolRequest, input BreakdownInput) (*mcp.CallToolResult, BreakdownOutput, error) {
+	latest, err := t.backend.Latest(ctx, service.LatestQuery{Scope: input.Scope})
+	if err != nil {
+		return nil, BreakdownOutput{}, err
+	}
+	s := latest.Snapshot
+	if s.Coverage.ScopeKind != model.ScopeFiles {
+		return nil, BreakdownOutput{}, model.InvalidArgument("storage_breakdown covers file captures; use largest_storage_items for Docker")
+	}
+	limit := defaultBreakdown
+	if input.Limit > 0 {
+		limit = min(input.Limit, maxRows)
+	}
+	result := BreakdownOutput{Snapshot: scopeInfo(s), RefreshRecommended: latest.RefreshRecommended,
+		Removals: []RemovalTotal{}, Categories: []CategoryTotal{},
+		Candidates: fileItems(model.RecordsIn(s, model.Candidates), s.Coverage.ScopeKind, limit),
+		Labeled:    fileItems(model.RecordsIn(s, model.Labeled), s.Coverage.ScopeKind, limit)}
+	totals, ok := model.RemovalTotals(s)
+	if !ok {
+		result.Notice = "This capture has no category totals. Capture the scope again to label its contents."
+		return nil, result, nil
+	}
+	for _, removal := range model.Removals {
+		result.Removals = append(result.Removals, RemovalTotal{Removal: removal, Bytes: totals[removal], Note: model.RemovalNote(removal)})
+	}
+	for _, item := range model.RecordsIn(s, model.Categories) {
+		result.Categories = append(result.Categories, CategoryTotal{Category: item.Kind, Bytes: item.Bytes, Files: item.Files,
+			Removal: model.RemovalOf(item.Kind), Note: model.KindNote(item.Kind)})
+	}
+	return nil, result, nil
 }
 
 func (t *toolset) changes(ctx context.Context, _ *mcp.CallToolRequest, input ChangesInput) (*mcp.CallToolResult, ChangesOutput, error) {

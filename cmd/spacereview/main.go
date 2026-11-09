@@ -21,16 +21,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lxn/walk"
+	"golang.org/x/sys/windows"
 
 	"github.com/liljestk/VIbeClean/internal/buildinfo"
-	"github.com/liljestk/VIbeClean/internal/desktop"
 	"github.com/liljestk/VIbeClean/internal/diag"
 	"github.com/liljestk/VIbeClean/internal/mcpserver"
 	"github.com/liljestk/VIbeClean/internal/rpc"
 	"github.com/liljestk/VIbeClean/internal/service"
 	"github.com/liljestk/VIbeClean/internal/service/local"
 	"github.com/liljestk/VIbeClean/internal/store"
+	"github.com/liljestk/VIbeClean/internal/ui"
 )
 
 // DefaultListen is the API address when --listen is not given.
@@ -144,7 +144,8 @@ func (o options) mcpArgs() []string {
 	args := []string{"--mcp"}
 	if o.connect != "" {
 		args = append(args, "--connect", o.connect)
-	} else if o.custom {
+	}
+	if o.custom {
 		args = append(args, "--index", o.index)
 	}
 	if o.connect != "" && o.tokenFile != rpc.DefaultTokenFile(o.index) {
@@ -176,7 +177,7 @@ func main() {
 
 func report(m mode, err error) {
 	if m == modeDesktop {
-		walk.MsgBox(nil, "Space Review", err.Error(), walk.MsgBoxIconError)
+		showError(err)
 		return
 	}
 	out := io.Writer(os.Stderr)
@@ -184,6 +185,14 @@ func report(m mode, err error) {
 		out = consoleOutput()
 	}
 	_, _ = fmt.Fprintln(out, "Space Review:", err)
+}
+
+// showError reports a desktop failure in a message box, since the desktop
+// app has no console.
+func showError(err error) {
+	title, _ := windows.UTF16PtrFromString("Space Review")
+	text, _ := windows.UTF16PtrFromString(err.Error())
+	_, _ = windows.MessageBox(0, text, title, windows.MB_OK|windows.MB_ICONERROR)
 }
 
 func run(opts options) (err error) {
@@ -214,7 +223,7 @@ func run(opts options) (err error) {
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	return desktop.Run(ctx, desktop.Options{
+	return ui.Run(ctx, ui.Options{
 		Open: opts.open, Location: opts.location(), MCPCommand: executable, MCPArgs: opts.mcpArgs(),
 		DiagnosticsDir: diagnosticsDir,
 	})

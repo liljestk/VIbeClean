@@ -87,6 +87,10 @@ const (
 	Series_SERIES_CONTAINERS        Series = 8
 	Series_SERIES_IMAGES            Series = 9
 	Series_SERIES_BUILD_CACHE       Series = 10
+	// One total per category. Each file counts toward one category.
+	Series_SERIES_CATEGORIES Series = 11
+	// The top folder of each installed program, game and project.
+	Series_SERIES_APPS_GAMES_PROJECTS Series = 12
 )
 
 // Enum value maps for Series.
@@ -103,19 +107,23 @@ var (
 		8:  "SERIES_CONTAINERS",
 		9:  "SERIES_IMAGES",
 		10: "SERIES_BUILD_CACHE",
+		11: "SERIES_CATEGORIES",
+		12: "SERIES_APPS_GAMES_PROJECTS",
 	}
 	Series_value = map[string]int32{
-		"SERIES_UNSPECIFIED":       0,
-		"SERIES_FOLDERS":           1,
-		"SERIES_SUBFOLDERS":        2,
-		"SERIES_REVIEW_CANDIDATES": 3,
-		"SERIES_LARGE_FILES":       4,
-		"SERIES_DOCKER_TOTALS":     5,
-		"SERIES_PROJECTS":          6,
-		"SERIES_VOLUMES":           7,
-		"SERIES_CONTAINERS":        8,
-		"SERIES_IMAGES":            9,
-		"SERIES_BUILD_CACHE":       10,
+		"SERIES_UNSPECIFIED":         0,
+		"SERIES_FOLDERS":             1,
+		"SERIES_SUBFOLDERS":          2,
+		"SERIES_REVIEW_CANDIDATES":   3,
+		"SERIES_LARGE_FILES":         4,
+		"SERIES_DOCKER_TOTALS":       5,
+		"SERIES_PROJECTS":            6,
+		"SERIES_VOLUMES":             7,
+		"SERIES_CONTAINERS":          8,
+		"SERIES_IMAGES":              9,
+		"SERIES_BUILD_CACHE":         10,
+		"SERIES_CATEGORIES":          11,
+		"SERIES_APPS_GAMES_PROJECTS": 12,
 	}
 )
 
@@ -298,6 +306,9 @@ type Coverage struct {
 	Subfolders    bool                   `protobuf:"varint,9,opt,name=subfolders,proto3" json:"subfolders,omitempty"`
 	Kind          string                 `protobuf:"bytes,10,opt,name=kind,proto3" json:"kind,omitempty"`
 	Engine        string                 `protobuf:"bytes,11,opt,name=engine,proto3" json:"engine,omitempty"`
+	// Version of the labeling rules. Review candidates and labeled folders are
+	// compared only between captures that used the same rules.
+	Labels        int32 `protobuf:"varint,12,opt,name=labels,proto3" json:"labels,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -409,7 +420,17 @@ func (x *Coverage) GetEngine() string {
 	return ""
 }
 
-// Record is one reading. Bytes is -1 when the size is unknown.
+func (x *Coverage) GetLabels() int32 {
+	if x != nil {
+		return x.Labels
+	}
+	return 0
+}
+
+// Record is one reading. Bytes is -1 when the size is unknown. A file
+// reading's kind is its category; its removal guidance follows from the
+// category. Its detail explains a label that came from a launcher, tool or
+// marker file.
 type Record struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Series           Series                 `protobuf:"varint,1,opt,name=series,proto3,enum=spacereview.v1.Series" json:"series,omitempty"`
@@ -1552,7 +1573,7 @@ const file_spacereview_v1_space_review_proto_rawDesc = "" +
 	"free_bytes\x18\x04 \x01(\x03R\tfreeBytes\x12\x1d\n" +
 	"\n" +
 	"journal_id\x18\x05 \x01(\x04R\tjournalId\x12\x19\n" +
-	"\bnext_usn\x18\x06 \x01(\x03R\anextUsn\"\x8c\x03\n" +
+	"\bnext_usn\x18\x06 \x01(\x03R\anextUsn\"\xa4\x03\n" +
 	"\bCoverage\x128\n" +
 	"\n" +
 	"scope_kind\x18\x01 \x01(\x0e2\x19.spacereview.v1.ScopeKindR\tscopeKind\x12-\n" +
@@ -1569,7 +1590,8 @@ const file_spacereview_v1_space_review_proto_rawDesc = "" +
 	"subfolders\x12\x12\n" +
 	"\x04kind\x18\n" +
 	" \x01(\tR\x04kind\x12\x16\n" +
-	"\x06engine\x18\v \x01(\tR\x06engine\"\xad\x03\n" +
+	"\x06engine\x18\v \x01(\tR\x06engine\x12\x16\n" +
+	"\x06labels\x18\f \x01(\x05R\x06labels\"\xad\x03\n" +
 	"\x06Record\x12.\n" +
 	"\x06series\x18\x01 \x01(\x0e2\x16.spacereview.v1.SeriesR\x06series\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x12\n" +
@@ -1654,7 +1676,7 @@ const file_spacereview_v1_space_review_proto_rawDesc = "" +
 	"\tScopeKind\x12\x1a\n" +
 	"\x16SCOPE_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10SCOPE_KIND_FILES\x10\x01\x12\x15\n" +
-	"\x11SCOPE_KIND_DOCKER\x10\x02*\x86\x02\n" +
+	"\x11SCOPE_KIND_DOCKER\x10\x02*\xbd\x02\n" +
 	"\x06Series\x12\x16\n" +
 	"\x12SERIES_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eSERIES_FOLDERS\x10\x01\x12\x15\n" +
@@ -1667,7 +1689,9 @@ const file_spacereview_v1_space_review_proto_rawDesc = "" +
 	"\x11SERIES_CONTAINERS\x10\b\x12\x11\n" +
 	"\rSERIES_IMAGES\x10\t\x12\x16\n" +
 	"\x12SERIES_BUILD_CACHE\x10\n" +
-	"*e\n" +
+	"\x12\x15\n" +
+	"\x11SERIES_CATEGORIES\x10\v\x12\x1e\n" +
+	"\x1aSERIES_APPS_GAMES_PROJECTS\x10\f*e\n" +
 	"\tDirection\x12\x19\n" +
 	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eDIRECTION_BOTH\x10\x01\x12\x14\n" +

@@ -21,6 +21,8 @@ var seriesToPB = map[string]pb.Series{
 	model.Containers:   pb.Series_SERIES_CONTAINERS,
 	model.Images:       pb.Series_SERIES_IMAGES,
 	model.BuildCache:   pb.Series_SERIES_BUILD_CACHE,
+	model.Categories:   pb.Series_SERIES_CATEGORIES,
+	model.Labeled:      pb.Series_SERIES_APPS_GAMES_PROJECTS,
 }
 
 var seriesFromPB = func() map[pb.Series]string {
@@ -110,13 +112,14 @@ func drivesFromPB(drives []*pb.Drive) []model.DriveState {
 func coverageToPB(c model.Coverage) *pb.Coverage {
 	return &pb.Coverage{ScopeKind: scopeKindToPB(c.ScopeKind), Drives: drivesToPB(c.Drives), Gaps: c.Gaps,
 		FilesChecked: c.Checked, RepeatedLinks: c.Shared, OnlineOnly: c.Online, SkippedLinks: c.Links,
-		EstimatedDirs: c.Estimated, Subfolders: c.Subfolders, Kind: c.Kind, Engine: c.Engine}
+		EstimatedDirs: c.Estimated, Subfolders: c.Subfolders, Kind: c.Kind, Engine: c.Engine, Labels: int32(c.Labels)}
 }
 
 func coverageFromPB(c *pb.Coverage) model.Coverage {
 	return model.Coverage{ScopeKind: scopeKindFromPB(c.GetScopeKind()), Drives: drivesFromPB(c.GetDrives()), Gaps: c.GetGaps(),
 		Checked: c.GetFilesChecked(), Shared: c.GetRepeatedLinks(), Online: c.GetOnlineOnly(), Links: c.GetSkippedLinks(),
-		Estimated: c.GetEstimatedDirs(), Subfolders: c.GetSubfolders(), Kind: c.GetKind(), Engine: c.GetEngine()}
+		Estimated: c.GetEstimatedDirs(), Subfolders: c.GetSubfolders(), Kind: c.GetKind(), Engine: c.GetEngine(),
+		Labels: int(c.GetLabels())}
 }
 
 func recordToPB(r *model.Record) *pb.Record {

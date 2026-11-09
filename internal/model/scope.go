@@ -52,7 +52,8 @@ func ScopeType(scope string) string {
 }
 
 // SupportedSeries lists the series of a scope kind. Comparisons of Docker
-// captures lead with the engine totals.
+// captures lead with the engine totals. Category totals are not compared:
+// they span drives and unreadable locations that can differ between captures.
 func SupportedSeries(kind string, comparing bool) []string {
 	if kind == ScopeDocker {
 		if comparing {
@@ -60,7 +61,10 @@ func SupportedSeries(kind string, comparing bool) []string {
 		}
 		return []string{Projects, Volumes, Containers, Images, BuildCache, DockerTotals}
 	}
-	return []string{Folders, Subfolders, Candidates, LargeFiles}
+	if comparing {
+		return []string{Folders, Subfolders, Candidates, Labeled, LargeFiles}
+	}
+	return []string{Folders, Subfolders, Categories, Candidates, Labeled, LargeFiles}
 }
 
 // ChooseSeries returns the canonical series name for a request, or the first

@@ -78,7 +78,7 @@ func (q *quickFinder) addToolFolders(home, local, roaming string) {
 		for _, name := range []string{"Claude-Data", "AnthropicClaude", "Codex", "Claude"} {
 			q.add(filepath.Join(local, name), model.AppKind, true)
 		}
-		q.add(filepath.Join(local, "Temp"), model.ScratchKind, true)
+		q.add(filepath.Join(local, "Temp"), model.TempKind, true)
 		q.addPackages(filepath.Join(local, "Packages"))
 	}
 	if roaming != "" {
@@ -115,13 +115,13 @@ func (q *quickFinder) findBackups(root string, includeChildren bool) {
 		return
 	}
 	var children []string
-	atDriveRoot := root == model.VolumeRoot(root)
+	at := placeOf(root, model.FilesKind)
 	err := q.reader.entries(q.ctx, root, 0, func(entry dirEntry) {
 		if entry.link() {
 			return
 		}
 		path := filepath.Join(root, entry.Name)
-		kind := classify(entry.Name, model.FilesKind, entry.directory(), atDriveRoot)
+		kind := classify(entry.Name, at, entry.directory()).kind
 		if kind == model.BackupKind || kind == model.RecoveryKind {
 			q.add(path, kind, false)
 		} else if includeChildren && entry.directory() && !strings.HasPrefix(entry.Name, ".") {

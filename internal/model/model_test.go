@@ -59,3 +59,30 @@ func TestErrorKinds(t *testing.T) {
 		t.Fatalf("unexpected classification: %v", err)
 	}
 }
+
+func TestRemovalLevels(t *testing.T) {
+	for kind, want := range map[string]Removal{
+		CacheKind: SafeToClear, RecycleKind: SafeToClear, BuildKind: SafeToClear, TempKind: SafeToClear,
+		DownloadKind: CheckFirst, BackupKind: CheckFirst, ScratchKind: CheckFirst, DockerKind: CheckFirst,
+		GameKind: Uninstall, ProgramKind: Uninstall,
+		SystemKind: Keep, ProjectKind: Keep, PersonalKind: Keep, FilesKind: Keep, "Compose project": Keep,
+	} {
+		if got := RemovalOf(kind); got != want {
+			t.Errorf("RemovalOf(%q) = %q, want %q", kind, got, want)
+		}
+	}
+	if IsCandidate(DockerKind) || IsCandidate(GameKind) || !IsCandidate(DownloadKind) || !IsCandidate(RecoveryKind) {
+		t.Fatal("review candidates are the categories to clear or check, apart from Docker storage")
+	}
+	s := Snapshot{Records: []Record{
+		{Series: Categories, Kind: CacheKind, Bytes: 3}, {Series: Categories, Kind: BuildKind, Bytes: 4},
+		{Series: Categories, Kind: GameKind, Bytes: 5}, {Series: Folders, Kind: CacheKind, Bytes: 100},
+	}}
+	totals, ok := RemovalTotals(s)
+	if !ok || totals[SafeToClear] != 7 || totals[Uninstall] != 5 || totals[CheckFirst] != 0 {
+		t.Fatalf("unexpected removal totals: %v, %t", totals, ok)
+	}
+	if _, ok := RemovalTotals(Snapshot{}); ok {
+		t.Fatal("a capture without category totals has no removal totals")
+	}
+}

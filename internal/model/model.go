@@ -25,10 +25,16 @@ const (
 
 // Series names. They are stored in the index and must not change.
 const (
-	Folders      = "Folders"
-	Subfolders   = "Subfolders"
-	Candidates   = "Review candidates"
-	LargeFiles   = "Large files"
+	Folders    = "Folders"
+	Subfolders = "Subfolders"
+	Candidates = "Review candidates"
+	LargeFiles = "Large files"
+	// Categories holds one total per category; each file counts toward one.
+	Categories = "Categories"
+	// Labeled holds the top folder of each installed program, game and
+	// project. A folder inside one of another category counts only toward
+	// its own.
+	Labeled      = "Apps, games & projects"
 	DockerTotals = "Docker totals"
 	Projects     = "Projects"
 	Volumes      = "Volumes"
@@ -76,6 +82,7 @@ type Coverage struct {
 	Links      int64        `json:"skipped_links,omitempty"`
 	Estimated  int64        `json:"estimated_dirs,omitempty"`
 	Subfolders bool         `json:"subfolders,omitempty"`
+	Labels     int          `json:"labels,omitempty"`
 	Kind       string       `json:"kind,omitempty"`
 	Engine     string       `json:"engine,omitempty"`
 	ScopeKind  string       `json:"scope_kind"`

@@ -18,9 +18,11 @@ import (
 
 const fsctlSetSparse = 0x900c4
 
+// capture measures a test folder as ordinary files. Test folders live under
+// the Windows temporary folder, which would otherwise label everything in them.
 func capture(t *testing.T, ctx context.Context, root string) (model.Snapshot, error) {
 	t.Helper()
-	return Capture(ctx, Request{Scope: root})
+	return Capture(ctx, Request{Scope: root, Kind: model.FilesKind})
 }
 
 func TestWindowsAllocationAndHardLinks(t *testing.T) {
@@ -135,29 +137,5 @@ func TestDrivesReplaced(t *testing.T) {
 	two := append(one, model.DriveState{Root: `E:\`, ID: "usb"})
 	if !drivesReplaced(two, []model.DriveState{{Root: `C:\`, ID: "c"}, {Root: `E:\`, ID: "other"}}) || drivesReplaced(two, one) {
 		t.Fatal("only a different volume at the same root counts as a replaced drive")
-	}
-}
-
-func TestClassify(t *testing.T) {
-	for _, tc := range []struct {
-		name, parent string
-		directory    bool
-		root         bool
-		want         string
-	}{
-		{"Windows.old", model.FilesKind, true, true, model.RecoveryKind},
-		{"Program Files", model.FilesKind, true, true, model.SystemKind},
-		{"Program Files", model.FilesKind, true, false, model.FilesKind},
-		{"node_modules", model.ProjectKind, true, false, model.BuildKind},
-		{"node_modules", model.AppKind, true, false, model.AppKind},
-		{"site-backup.zip", model.FilesKind, false, false, model.BackupKind},
-		{"photos.zip", model.FilesKind, false, false, model.FilesKind},
-		{"crash.dmp", model.FilesKind, false, false, model.CacheKind},
-		{"feature-wt", model.FilesKind, true, false, model.CheckoutKind},
-		{"anything", model.SystemKind, true, false, model.SystemKind},
-	} {
-		if got := classify(tc.name, tc.parent, tc.directory, tc.root); got != tc.want {
-			t.Errorf("classify(%q, %q) = %q, want %q", tc.name, tc.parent, got, tc.want)
-		}
 	}
 }

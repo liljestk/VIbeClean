@@ -74,7 +74,7 @@ func TestToolsUseTheBackend(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
-	if !slices.Equal(names, []string{ToolCapture, ToolLargest, ToolDrives, ToolListScopes, ToolChanges}) {
+	if !slices.Equal(names, []string{ToolCapture, ToolLargest, ToolDrives, ToolListScopes, ToolBreakdown, ToolChanges}) {
 		t.Fatalf("tools = %v", names)
 	}
 	if drives := call[DrivesOutput](t, ctx, session, ToolDrives, struct{}{}); len(drives.Drives) == 0 {
@@ -100,6 +100,20 @@ func TestToolsUseTheBackend(t *testing.T) {
 	largest := call[LatestOutput](t, ctx, session, ToolLargest, LatestInput{Scope: second.Scope, Series: model.LargeFiles, Query: "big"})
 	if len(largest.Items) != 1 || largest.Items[0].Bytes < 75*units.MiB {
 		t.Fatalf("largest files: %+v", largest)
+	}
+	if largest.Items[0].Removal == "" || largest.Items[0].Removal != model.RemovalOf(largest.Items[0].Kind) {
+		t.Fatalf("file items should carry their removal level: %+v", largest.Items[0])
+	}
+	summary := call[BreakdownOutput](t, ctx, session, ToolBreakdown, BreakdownInput{Scope: second.Scope})
+	var counted int64
+	for _, total := range summary.Removals {
+		counted += total.Bytes
+	}
+	// Test folders sit in the Windows temporary folder, so everything in them is temporary.
+	if summary.Notice != "" || len(summary.Removals) != len(model.Removals) || len(summary.Categories) != 1 ||
+		summary.Categories[0].Category != model.TempKind || summary.Removals[0].Removal != model.SafeToClear ||
+		summary.Removals[0].Bytes != counted || counted < 75*units.MiB {
+		t.Fatalf("unexpected breakdown: %+v", summary)
 	}
 	listed := call[ListOutput](t, ctx, session, ToolListScopes, struct{}{})
 	if len(listed.Scopes) != 1 || listed.Scopes[0].CaptureID != second.CaptureID {

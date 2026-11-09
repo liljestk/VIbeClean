@@ -80,13 +80,18 @@ func (m *matcher) gapChanged(item *model.Record) bool {
 }
 
 func (m *matcher) incomparable(series string, old, fresh *model.Record) bool {
-	return (series == model.Candidates && m.before.Kind != m.after.Kind) ||
+	return (series == model.Candidates && (m.before.Kind != m.after.Kind || m.before.Labels != m.after.Labels)) ||
 		(old != nil && old.Partial) || (fresh != nil && fresh.Partial) ||
 		m.driveChanged(old) || m.driveChanged(fresh) || m.gapChanged(old) || m.gapChanged(fresh)
 }
 
 func (m *matcher) add(key model.RowKey, old, fresh *model.Record) {
-	if key.Series == model.Subfolders && (!m.before.Subfolders || !m.after.Subfolders) {
+	switch {
+	case key.Series == model.Subfolders && (!m.before.Subfolders || !m.after.Subfolders),
+		// Labeled folders start once both captures use the same label rules.
+		key.Series == model.Labeled && m.before.Labels != m.after.Labels,
+		// Category totals span every drive and unreadable location in a capture.
+		key.Series == model.Categories:
 		return
 	}
 	var a, b int64

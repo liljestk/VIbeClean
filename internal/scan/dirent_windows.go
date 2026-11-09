@@ -91,7 +91,8 @@ func (r *directoryReader) compressedSize(path string) int64 {
 }
 
 // entries lists a folder without opening file contents or following a final
-// link. Names of files smaller than namedFrom are left empty to save work.
+// link. Names of files smaller than namedFrom are left empty to save work,
+// apart from the names that can identify a folder.
 func (r *directoryReader) entries(ctx context.Context, path string, namedFrom int64, consume func(dirEntry)) error {
 	r.directories++
 	ptr, err := windows.UTF16PtrFromString(longPath(path))
@@ -180,10 +181,32 @@ func (r *directoryReader) decode(record []byte, nameLength int, path string, nam
 		entry.Name = name()
 		entry.Bytes = r.compressedSize(filepath.Join(path, entry.Name))
 	}
-	if entry.Name == "" && (entry.directory() || entry.Bytes >= namedFrom) {
+	if entry.Name == "" && (entry.directory() || entry.Bytes >= namedFrom ||
+		markerName(record[dirInfoHeader:dirInfoHeader+nameLength])) {
 		entry.Name = name()
 	}
 	return entry
+}
+
+// markerName reports whether a UTF-16 file name is one that can identify its
+// folder, such as CACHEDIR.TAG or go.mod. It does not allocate.
+func markerName(raw []byte) bool {
+	var lower [32]byte
+	n := len(raw) / 2
+	if n > len(lower) {
+		return false
+	}
+	for i := range n {
+		c := binary.LittleEndian.Uint16(raw[2*i:])
+		if c >= 0x80 {
+			return false
+		}
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		lower[i] = byte(c)
+	}
+	return markerFile(string(lower[:n]))
 }
 
 func filetimeMillis(ticks uint64) int64 {
