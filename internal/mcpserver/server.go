@@ -74,12 +74,12 @@ type Item struct {
 	Removal model.Removal `json:"removal,omitempty"`
 }
 
-func fileItems(records []model.Record, scopeKind string, limit int) []Item {
+func fileItems(records []model.Record, coverage model.Coverage, limit int) []Item {
 	result := make([]Item, 0, min(len(records), limit))
 	for _, record := range records[:min(len(records), limit)] {
 		item := Item{Record: record}
-		if scopeKind == model.ScopeFiles && record.Kind != "" {
-			item.Removal = model.RemovalOf(record.Kind)
+		if coverage.ScopeKind == model.ScopeFiles && record.Kind != "" {
+			item.Removal = model.CaptureRemoval(record.Kind, coverage.Labels)
 		}
 		result = append(result, item)
 	}
@@ -270,7 +270,7 @@ func (t *toolset) largest(ctx context.Context, _ *mcp.CallToolRequest, input Lat
 	}
 	items := model.RecordsIn(latest.Snapshot, series)
 	return nil, LatestOutput{Snapshot: scopeInfo(latest.Snapshot), Series: series, RefreshRecommended: latest.RefreshRecommended,
-		Items: fileItems(items, latest.Snapshot.Coverage.ScopeKind, limitRows(input.Limit))}, nil
+		Items: fileItems(items, latest.Snapshot.Coverage, limitRows(input.Limit))}, nil
 }
 
 func (t *toolset) breakdown(ctx context.Context, _ *mcp.CallToolRequest, input BreakdownInput) (*mcp.CallToolResult, BreakdownOutput, error) {
@@ -288,19 +288,22 @@ func (t *toolset) breakdown(ctx context.Context, _ *mcp.CallToolRequest, input B
 	}
 	result := BreakdownOutput{Snapshot: scopeInfo(s), RefreshRecommended: latest.RefreshRecommended,
 		Removals: []RemovalTotal{}, Categories: []CategoryTotal{},
-		Candidates: fileItems(model.RecordsIn(s, model.Candidates), s.Coverage.ScopeKind, limit),
-		Labeled:    fileItems(model.RecordsIn(s, model.Labeled), s.Coverage.ScopeKind, limit)}
+		Candidates: fileItems(model.RecordsIn(s, model.Candidates), s.Coverage, limit),
+		Labeled:    fileItems(model.RecordsIn(s, model.Labeled), s.Coverage, limit)}
 	totals, ok := model.RemovalTotals(s)
 	if !ok {
 		result.Notice = "This capture has no category totals. Capture the scope again to label its contents."
 		return nil, result, nil
+	}
+	if s.Coverage.Labels < model.LabelsVersion {
+		result.Notice = "Capture the scope again to apply the current cleanup rules."
 	}
 	for _, removal := range model.Removals {
 		result.Removals = append(result.Removals, RemovalTotal{Removal: removal, Bytes: totals[removal], Note: model.RemovalNote(removal)})
 	}
 	for _, item := range model.RecordsIn(s, model.Categories) {
 		result.Categories = append(result.Categories, CategoryTotal{Category: item.Kind, Bytes: item.Bytes, Files: item.Files,
-			Removal: model.RemovalOf(item.Kind), Note: model.KindNote(item.Kind)})
+			Removal: model.CaptureRemoval(item.Kind, s.Coverage.Labels), Note: model.KindNote(item.Kind)})
 	}
 	return nil, result, nil
 }
@@ -341,6 +344,9 @@ func (t *toolset) changes(ctx context.Context, _ *mcp.CallToolRequest, input Cha
 	}
 	if series == model.Images || series == model.BuildCache {
 		result.Notice = "Individual Docker entries can share data. Use Docker totals to compare category usage."
+	}
+	if (series == model.Candidates || series == model.Labeled) && diff.Baseline.ID != 0 {
+		result.Notice = "Only entries measured in the same category under the same rules in both captures are comparable."
 	}
 	for _, item := range diff.Changes {
 		if item.Series == series {

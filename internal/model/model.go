@@ -51,6 +51,7 @@ type Record struct {
 	Path        string `json:"path,omitempty"`
 	Kind        string `json:"kind,omitempty"`
 	Bytes       int64  `json:"bytes"`
+	Logical     int64  `json:"logical_bytes,omitempty"`
 	Files       int64  `json:"files,omitempty"`
 	Modified    int64  `json:"modified_ms,omitempty"`
 	Directory   bool   `json:"directory,omitempty"`
@@ -74,18 +75,21 @@ type DriveState struct {
 
 // Coverage describes what a capture measured and what it could not read.
 type Coverage struct {
-	Drives     []DriveState `json:"drives,omitempty"`
-	Gaps       []string     `json:"gaps,omitempty"`
-	Checked    int64        `json:"files_checked,omitempty"`
-	Shared     int64        `json:"repeated_links,omitempty"`
-	Online     int64        `json:"online_only,omitempty"`
-	Links      int64        `json:"skipped_links,omitempty"`
-	Estimated  int64        `json:"estimated_dirs,omitempty"`
-	Subfolders bool         `json:"subfolders,omitempty"`
-	Labels     int          `json:"labels,omitempty"`
-	Kind       string       `json:"kind,omitempty"`
-	Engine     string       `json:"engine,omitempty"`
-	ScopeKind  string       `json:"scope_kind"`
+	Drives        []DriveState `json:"drives,omitempty"`
+	Gaps          []string     `json:"gaps,omitempty"`
+	Exclusions    []string     `json:"exclusions,omitempty"`
+	Inventory     bool         `json:"inventory,omitempty"`
+	Checked       int64        `json:"files_checked,omitempty"`
+	Shared        int64        `json:"repeated_links,omitempty"`
+	Online        int64        `json:"online_only,omitempty"`
+	Links         int64        `json:"skipped_links,omitempty"`
+	Estimated     int64        `json:"estimated_dirs,omitempty"`
+	EstimatePaths []string     `json:"estimated_paths,omitempty"`
+	Subfolders    bool         `json:"subfolders,omitempty"`
+	Labels        int          `json:"labels,omitempty"`
+	Kind          string       `json:"kind,omitempty"`
+	Engine        string       `json:"engine,omitempty"`
+	ScopeKind     string       `json:"scope_kind"`
 }
 
 // Snapshot is one saved capture. Captured is in Unix milliseconds.

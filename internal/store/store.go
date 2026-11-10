@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,7 +27,7 @@ import (
 )
 
 const (
-	schemaVersion   = 2
+	schemaVersion   = 3
 	retention       = 120 * 24 * time.Hour
 	snapshotFields  = "id, scope, label, captured, coverage"
 	latestSnapshot  = `SELECT ` + snapshotFields + ` FROM snapshots WHERE scope = ? ORDER BY id DESC LIMIT 1`
@@ -137,13 +138,12 @@ func migrate(ctx context.Context, db *sql.DB, version int) error {
 	`
 	const upgrade = `
 		CREATE INDEX IF NOT EXISTS readings_closed ON readings(scope, until, first) WHERE until IS NOT NULL;
-		PRAGMA user_version = 2;
 	`
 	create := ""
 	if version == 0 {
 		create = schema
 	}
-	_, err := db.ExecContext(ctx, "BEGIN IMMEDIATE;"+create+upgrade+"COMMIT;")
+	_, err := db.ExecContext(ctx, "BEGIN IMMEDIATE;"+create+upgrade+inventorySchema+"PRAGMA user_version = 3;COMMIT;")
 	return err
 }
 
@@ -203,7 +203,13 @@ type saveStats struct {
 // Save stores a capture in one transaction and sets its ID. Unchanged readings
 // reuse their existing versions. A capture that another capture of the same
 // scope overtook fails with a conflict.
-func (i *Index) Save(ctx context.Context, s *model.Snapshot) (err error) {
+func (i *Index) Save(ctx context.Context, s *model.Snapshot) error {
+	return i.SaveWithInventory(ctx, s, nil)
+}
+
+// SaveWithInventory publishes the current inventory and its capture together.
+// next returns io.EOF when the last entry has been read.
+func (i *Index) SaveWithInventory(ctx context.Context, s *model.Snapshot, inventoryNext func() (model.InventoryEntry, error)) (err error) {
 	started := time.Now()
 	stage := "encode"
 	var stats saveStats
@@ -221,6 +227,7 @@ func (i *Index) Save(ctx context.Context, s *model.Snapshot) (err error) {
 	if s.Captured == 0 {
 		s.Captured = time.Now().UnixMilli()
 	}
+	s.Coverage.Inventory = inventoryNext != nil
 	meta, err := json.Marshal(s.Coverage)
 	if err != nil {
 		return err
@@ -250,6 +257,10 @@ func (i *Index) Save(ctx context.Context, s *model.Snapshot) (err error) {
 	}
 	stage = "write_versions"
 	if err = writeVersions(ctx, tx, s.Scope, id, next, &stats); err != nil {
+		return err
+	}
+	stage = "inventory"
+	if err = replaceInventory(ctx, tx, s.Scope, id, inventoryNext); err != nil {
 		return err
 	}
 	stage = "retention"
@@ -385,13 +396,23 @@ func noCapture(err error) error {
 func (i *Index) List(ctx context.Context) (entries []model.Snapshot, err error) {
 	started := time.Now()
 	defer func() { diag.Duration(ctx, "index.list", started, err, slog.Int("scopes", len(entries))) }()
-	rows, err := i.db.QueryContext(ctx, `SELECT `+snapshotFields+` FROM snapshots
+	return i.listSnapshots(ctx, `SELECT `+snapshotFields+` FROM snapshots
 		WHERE id IN (SELECT MAX(id) FROM snapshots GROUP BY scope)
 		ORDER BY captured DESC, id DESC`)
+}
+
+// History returns capture metadata for one scope, newest saved capture first.
+func (i *Index) History(ctx context.Context, scope string) ([]model.Snapshot, error) {
+	return i.listSnapshots(ctx, `SELECT `+snapshotFields+` FROM snapshots WHERE scope = ? ORDER BY id DESC`, scope)
+}
+
+func (i *Index) listSnapshots(ctx context.Context, query string, args ...any) ([]model.Snapshot, error) {
+	rows, err := i.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	var entries []model.Snapshot
 	for rows.Next() {
 		s, err := loadSnapshot(rows)
 		if err != nil {
@@ -464,7 +485,19 @@ func readRecords(ctx context.Context, tx *sql.Tx, query string, args ...any) (ma
 // Compare ranks changes between the latest capture of a scope and a baseline:
 // the previous capture when days is 0, otherwise the nearest capture at or
 // before the cutoff. Without a baseline, the result has a zero Baseline.
-func (i *Index) Compare(ctx context.Context, scope string, days int) (result model.Comparison, err error) {
+func (i *Index) Compare(ctx context.Context, scope string, days int) (model.Comparison, error) {
+	return i.compare(ctx, scope, days, 0, 0)
+}
+
+// ComparePair compares two particular captures of one scope, in capture order.
+func (i *Index) ComparePair(ctx context.Context, scope string, from, to int64) (model.Comparison, error) {
+	if from <= 0 || from >= to {
+		return model.Comparison{}, model.InvalidArgument("choose an earlier and a later capture")
+	}
+	return i.compare(ctx, scope, 0, from, to)
+}
+
+func (i *Index) compare(ctx context.Context, scope string, days int, from, to int64) (result model.Comparison, err error) {
 	started := time.Now()
 	stage := "begin"
 	var earlierRows, laterRows int
@@ -481,18 +514,30 @@ func (i *Index) Compare(ctx context.Context, scope string, days int) (result mod
 		return result, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	const byID = `SELECT ` + snapshotFields + ` FROM snapshots WHERE scope = ? AND id = ?`
 	stage = "read_latest"
-	result.Latest, err = loadSnapshot(tx.QueryRowContext(ctx, latestSnapshot, scope))
+	if to == 0 {
+		result.Latest, err = loadSnapshot(tx.QueryRowContext(ctx, latestSnapshot, scope))
+	} else {
+		result.Latest, err = loadSnapshot(tx.QueryRowContext(ctx, byID, scope, to))
+	}
 	if err != nil {
 		return result, noCapture(err)
 	}
 	stage = "read_baseline"
-	result.Baseline, result.ShortWindow, err = baseline(ctx, tx, scope, result.Latest, days)
-	if errors.Is(err, sql.ErrNoRows) {
-		return result, tx.Commit()
+	if from == 0 {
+		result.Baseline, result.ShortWindow, err = baseline(ctx, tx, scope, result.Latest, days)
+		if errors.Is(err, sql.ErrNoRows) {
+			return result, tx.Commit()
+		}
+	} else {
+		result.Baseline, err = loadSnapshot(tx.QueryRowContext(ctx, byID, scope, from))
 	}
 	if err != nil {
-		return result, err
+		return result, noCapture(err)
+	}
+	if !slices.Equal(result.Baseline.Coverage.Exclusions, result.Latest.Coverage.Exclusions) {
+		return result, model.InvalidArgument("these scans used different exclusions. Choose scans with matching exclusions")
 	}
 	// An unchanged version spans both endpoints. Read only versions that end
 	// or begin between them, ignoring intermediate versions already replaced.
@@ -523,19 +568,24 @@ func (i *Index) Compare(ctx context.Context, scope string, days int) (result mod
 }
 
 func baseline(ctx context.Context, tx *sql.Tx, scope string, latest model.Snapshot, days int) (model.Snapshot, bool, error) {
+	paths, err := json.Marshal(append([]string{}, latest.Coverage.Exclusions...))
+	if err != nil {
+		return model.Snapshot{}, false, err
+	}
+	const matching = `WHERE scope = ? AND id < ? AND COALESCE(json_extract(coverage, '$.exclusions'), '[]') = ?`
 	if days == 0 {
-		s, err := loadSnapshot(tx.QueryRowContext(ctx, `SELECT `+snapshotFields+` FROM snapshots
-			WHERE scope = ? AND id < ? ORDER BY id DESC LIMIT 1`, scope, latest.ID))
+		s, err := loadSnapshot(tx.QueryRowContext(ctx, `SELECT `+snapshotFields+` FROM snapshots `+
+			matching+` ORDER BY id DESC LIMIT 1`, scope, latest.ID, string(paths)))
 		return s, false, err
 	}
 	cutoff := latest.Captured - (time.Duration(days) * 24 * time.Hour).Milliseconds()
-	s, err := loadSnapshot(tx.QueryRowContext(ctx, `SELECT `+snapshotFields+` FROM snapshots
-		WHERE scope = ? AND captured <= ? ORDER BY id DESC LIMIT 1`, scope, cutoff))
+	s, err := loadSnapshot(tx.QueryRowContext(ctx, `SELECT `+snapshotFields+` FROM snapshots `+
+		matching+` AND captured <= ? ORDER BY id DESC LIMIT 1`, scope, latest.ID, string(paths), cutoff))
 	if !errors.Is(err, sql.ErrNoRows) {
 		return s, false, err
 	}
 	// The window reaches further back than the history: use the oldest capture.
-	s, err = loadSnapshot(tx.QueryRowContext(ctx, `SELECT `+snapshotFields+` FROM snapshots
-		WHERE scope = ? AND id < ? ORDER BY id LIMIT 1`, scope, latest.ID))
+	s, err = loadSnapshot(tx.QueryRowContext(ctx, `SELECT `+snapshotFields+` FROM snapshots `+
+		matching+` ORDER BY id LIMIT 1`, scope, latest.ID, string(paths)))
 	return s, true, err
 }

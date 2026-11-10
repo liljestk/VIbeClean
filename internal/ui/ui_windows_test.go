@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/json"
+	"image"
 	"io/fs"
 	"net/url"
 	"os"
@@ -13,6 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"gioui.org/app"
+	"gioui.org/io/input"
+	"gioui.org/io/key"
+	"gioui.org/layout"
+	"gioui.org/op"
+	"gioui.org/widget"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/liljestk/VIbeClean/internal/model"
@@ -91,9 +98,132 @@ func TestSortKeepsSelectedItem(t *testing.T) {
 	if row, _ := p.selected(); row.Item.Key != "c" || p.items[p.rows[0]].Item.Key != "a" {
 		t.Fatalf("sorting by name should keep %q selected, got %q", "c", row.Item.Key)
 	}
+	var ops op.Ops
+	gtx := layout.Context{Ops: &ops, Constraints: layout.Exact(image.Pt(300, 500))}
+	u := &ui{th: &theme{shaper: newShaper()}}
+	p.layoutInspector(gtx, u)
+	link := p.rankLinks[model.RowKey{Series: model.Folders, Key: "b"}]
+	if link == nil {
+		t.Fatal("missing ranking bar for b")
+	}
+	link.Click()
+	ops.Reset()
+	p.layoutInspector(gtx, u)
+	if row, _ := p.selected(); row.Item.Key != "b" {
+		t.Fatalf("the bar should select b in the sorted table, got %q", row.Item.Key)
+	}
 	p.search("zzz", "test")
 	if _, ok := p.selected(); ok || p.empty == "" {
 		t.Fatal("a search without matches should clear the selection and explain why")
+	}
+}
+
+func TestFirstScanHandoffAndRemovalBack(t *testing.T) {
+	u := &ui{ctx: t.Context(), win: new(app.Window), th: &theme{shaper: newShaper()}, backend: struct{ service.Backend }{}}
+	u.initViews()
+	saved := model.Snapshot{
+		ID: 1, Scope: model.ScopeKey(model.QuickScope, nil), Label: model.QuickScope,
+		Coverage: model.Coverage{ScopeKind: model.ScopeFiles, Labels: model.LabelsVersion},
+		Records: []model.Record{
+			{Series: model.Folders, Key: "a", Name: "Logs A", Bytes: 30},
+			{Series: model.Folders, Key: "b", Name: "Logs B", Bytes: 50},
+			{Series: model.Folders, Key: "c", Name: "Photos", Bytes: 90},
+			{Series: model.Candidates, Key: "cache", Name: "Cache", Kind: model.CacheKind, Bytes: 20},
+		},
+	}
+	u.scopes, u.files, u.comparison.Latest = []model.Snapshot{saved}, saved, saved
+	u.fileFilter.setText("previous filter")
+	u.viewFirstScan.Click()
+	var ops op.Ops
+	u.workspace(layout.Context{Ops: &ops, Constraints: layout.Exact(image.Pt(1100, 700))})
+	if u.view != viewFiles || u.files.ID != saved.ID || len(u.filePane.rows) != 3 || u.fileFilter.text() != "" {
+		t.Fatal("the first scan action should open all saved folders in Files")
+	}
+
+	u.fileFilter.setText("Logs")
+	u.renderFiles()
+	u.filePane.sortBy(0)
+	u.filePane.setCurrent(1)
+	u.showRemoval(model.SafeToClear)
+	u.showRemoval(model.SafeToClear)
+	if len(u.back) != 1 || len(u.filePane.rows) != 1 || u.fileFilter.text() != "" {
+		t.Fatal("the cleanup tile should show candidates and remember the previous view once")
+	}
+	u.files.ID++ // A rescan of the same scope can finish before the user goes back.
+	u.goBack()
+	row, _ := u.filePane.selected()
+	if u.files.ID != saved.ID+1 || u.fileFilter.text() != "Logs" || u.filePane.sortCol != 0 ||
+		!u.filePane.sortAsc || row.Item.Key != "b" || u.fileMode.value() != model.Folders || u.removalFilter() != "" {
+		t.Fatal("Back should restore the results view on the newer scan")
+	}
+}
+
+type filePresenceBackend struct {
+	service.Backend
+	disks []model.DriveState
+	page  service.InventoryPage
+}
+
+func (b filePresenceBackend) Drives(ctx context.Context) ([]model.DriveState, error) {
+	return b.disks, ctx.Err()
+}
+
+func (b filePresenceBackend) Inventory(ctx context.Context, _ service.InventoryQuery) (service.InventoryPage, error) {
+	return b.page, ctx.Err()
+}
+
+func TestFilesRecheckMissingFoldersWhenOpened(t *testing.T) {
+	for name, inventory := range map[string]bool{"summary": false, "inventory": true} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			gone, kept := filepath.Join(root, "gone"), filepath.Join(root, "kept")
+			for _, path := range []string{gone, kept} {
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			disks := []model.DriveState{{Root: model.VolumeRoot(root), ID: "volume"}}
+			items := []model.Record{
+				{Series: model.Folders, Key: gone, Name: "gone", Path: gone, Bytes: 100, Directory: true},
+				{Series: model.Folders, Key: kept, Name: "kept", Path: kept, Bytes: 10, Directory: true},
+			}
+			backend := filePresenceBackend{disks: disks, page: service.InventoryPage{Items: items, Total: len(items)}}
+			u := &ui{ctx: t.Context(), win: new(app.Window), backend: backend}
+			u.initViews()
+			u.setView(viewFiles)
+			u.files = model.Snapshot{ID: 1, Label: root, Records: items,
+				Coverage: model.Coverage{ScopeKind: model.ScopeFiles, Drives: disks, Inventory: inventory}}
+			u.renderFiles()
+			waitForRows := func(want int) {
+				t.Helper()
+				deadline := time.Now().Add(5 * time.Second)
+				for u.drain(); u.inventoryLoad != nil || u.fileCheck != nil; u.drain() {
+					if time.Now().After(deadline) {
+						t.Fatal("Files did not finish loading")
+					}
+					time.Sleep(time.Millisecond)
+				}
+				if got := len(u.filePane.rows); got != want {
+					t.Fatalf("Files displays %d rows, want %d", got, want)
+				}
+			}
+			waitForRows(2)
+			u.setView(viewMCP)
+			if err := os.Remove(gone); err != nil {
+				t.Fatal(err)
+			}
+			u.setView(viewFiles)
+			waitForRows(1)
+			row, _ := u.filePane.selected()
+			if row.Item.Path != kept || u.files.ID != 1 || len(u.files.Records) != 2 {
+				t.Fatal("Files should hide the removed folder while retaining the saved capture")
+			}
+			if err := os.Mkdir(gone, 0700); err != nil {
+				t.Fatal(err)
+			}
+			u.checkFilePaths()
+			waitForRows(2)
+		})
 	}
 }
 
@@ -102,6 +232,27 @@ func TestThousands(t *testing.T) {
 		if got := thousands(n); got != want {
 			t.Errorf("thousands(%d) = %q, want %q", n, got, want)
 		}
+	}
+}
+
+func TestAccessibleButtonKeepsRoleAndFocus(t *testing.T) {
+	var router input.Router
+	var ops op.Ops
+	var button widget.Clickable
+	size := image.Pt(120, 34)
+	gtx := layout.Context{Ops: &ops, Source: router.Source(), Constraints: layout.Exact(size)}
+	frame := &accessFrame{
+		targets: make(map[int32]accessNode), keys: make(map[accessKey]int32), priorKeys: make(map[accessKey]int32),
+	}
+	th := &theme{shaper: newShaper(), access: frame}
+	frame.begin(gtx)
+	gtx.Execute(key.FocusCmd{Tag: &button})
+	th.button(gtx, &button, buttonStyle{label: "Filters"})
+	frame.snapshot(&ops, size)
+	tree := frame.tree.Load()
+	node := tree.nodes[tree.focus]
+	if node.name != "Filters" || node.role != accessButton || node.bounds != (image.Rectangle{Max: size}) || node.invoke == nil {
+		t.Fatalf("expected a focused, invokable button, got %+v", node)
 	}
 }
 
@@ -221,7 +372,7 @@ func TestRemovalRowsAndSummary(t *testing.T) {
 			t.Fatalf("games row: %+v", row)
 		}
 	}
-	if safe := categoryRows(s, model.SafeToClear); len(safe) != 2 {
+	if safe := categoryRows(s, model.SafeToClear); len(safe) != 1 {
 		t.Fatalf("the removal filter should keep safe categories only: %+v", safe)
 	}
 	check := fileRows(s, model.Candidates, model.CheckFirst)
@@ -232,7 +383,7 @@ func TestRemovalRowsAndSummary(t *testing.T) {
 	if len(all) != 2 || !strings.HasPrefix(all[0].Detail, "Marked as a cache.") {
 		t.Fatalf("a label's reason should lead the note: %+v", all)
 	}
-	if got := largestKinds(s, model.SafeToClear); got != "Cache & logs, Build output" {
+	if got := largestKinds(s, model.SafeToClear); got != "Cache & logs" {
 		t.Fatalf("largestKinds = %q", got)
 	}
 	if shareText(1, 2000) != "<0.1%" || shareText(1, 0) != "" {
@@ -241,7 +392,7 @@ func TestRemovalRowsAndSummary(t *testing.T) {
 	u := &ui{}
 	u.files = s
 	metrics := u.fileMetrics()
-	if len(metrics) != 4 || metrics[1].label != "Safe to clear" || metrics[1].click == nil ||
+	if len(metrics) != 4 || metrics[1].label != "Likely reclaimable" || metrics[1].click == nil ||
 		metrics[3].label != "Uninstall" || metrics[0].caption != "1,200 files" {
 		t.Fatalf("unexpected summary: %+v", metrics)
 	}

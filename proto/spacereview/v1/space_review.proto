@@ -19,9 +19,17 @@ service SpaceReviewService {
   rpc ListDrives(ListDrivesRequest) returns (ListDrivesResponse);
   // ListScopes returns the latest capture of every saved scope, without records.
   rpc ListScopes(ListScopesRequest) returns (ListScopesResponse);
+  // ListHistory returns the saved captures of a scope, without records.
+  rpc ListHistory(ListHistoryRequest) returns (ListHistoryResponse);
+  // GetInventory pages through the detailed entries of a current capture.
+  rpc GetInventory(GetInventoryRequest) returns (GetInventoryResponse);
+  // StreamInventory returns all matching entries in table order.
+  rpc StreamInventory(StreamInventoryRequest) returns (stream StreamInventoryResponse);
+  // FindDuplicates verifies the contents of files in a current inventory.
+  rpc FindDuplicates(FindDuplicatesRequest) returns (FindDuplicatesResponse);
   // GetLatest returns the latest capture of one scope with its records.
   rpc GetLatest(GetLatestRequest) returns (GetLatestResponse);
-  // CompareCaptures ranks changes between the latest capture and a baseline.
+  // CompareCaptures ranks changes between two saved captures.
   rpc CompareCaptures(CompareCapturesRequest) returns (CompareCapturesResponse);
   // Capture measures a scope and saves it. The stream reports progress and
   // ends with the saved snapshot. Cancelling the call cancels the capture.
@@ -88,6 +96,9 @@ message Coverage {
   // Version of the labeling rules. Review candidates and labeled folders are
   // compared only between captures that used the same rules.
   int32 labels = 12;
+  repeated string exclusions = 13;
+  bool inventory = 14;
+  repeated string estimated_paths = 15;
 }
 
 // Record is one reading. Bytes is -1 when the size is unknown. A file
@@ -110,6 +121,7 @@ message Record {
   bool idle = 13;
   int64 reclaimable_bytes = 14;
   bool partial = 15;
+  int64 logical_bytes = 16;
 }
 
 // Snapshot is one saved capture.
@@ -164,6 +176,79 @@ message ListScopesResponse {
   repeated Snapshot scopes = 1;
 }
 
+// ListHistoryRequest selects a saved scope by ID, label or folder path.
+message ListHistoryRequest {
+  string scope = 1;
+}
+
+// ListHistoryResponse lists captures in reverse save order.
+message ListHistoryResponse {
+  repeated Snapshot captures = 1;
+}
+
+// GetInventoryRequest selects the direct children of a folder, or files at
+// any depth, from the latest detailed capture of a scope.
+message GetInventoryRequest {
+  int64 capture_id = 1;
+  string parent = 2;
+  bool files = 3;
+  string query = 4;
+  string within = 5;
+  string extension = 6;
+  int64 minimum_bytes = 7;
+  google.protobuf.Timestamp modified_since = 8;
+  int32 offset = 9;
+  int32 limit = 10;
+  // 0 sorts by name, 1 by bytes, 2 by category and 3 by modification time.
+  int32 sort_column = 11;
+  bool ascending = 12;
+  string removal = 13;
+}
+
+// GetInventoryResponse contains the requested page and full match count.
+message GetInventoryResponse {
+  repeated Record items = 1;
+  int32 total = 2;
+}
+
+// StreamInventoryRequest selects an inventory filter and sort order.
+message StreamInventoryRequest {
+  GetInventoryRequest filter = 1;
+}
+
+// StreamInventoryResponse is a bounded chunk of the filtered inventory.
+message StreamInventoryResponse {
+  repeated Record items = 1;
+}
+
+// FindDuplicatesRequest searches a current file inventory. An empty folder
+// searches the entire scope.
+message FindDuplicatesRequest {
+  int64 capture_id = 1;
+  string folder = 2;
+}
+
+// DuplicateCopy is one physical file and its observed hard link paths.
+message DuplicateCopy {
+  repeated string paths = 1;
+  int64 allocated_bytes = 2;
+  uint32 link_count = 3;
+}
+
+// DuplicateGroup contains distinct physical files with the same content.
+message DuplicateGroup {
+  int64 logical_bytes = 1;
+  repeated DuplicateCopy copies = 2;
+}
+
+// FindDuplicatesResponse lists verified matches and scan coverage.
+message FindDuplicatesResponse {
+  repeated DuplicateGroup groups = 1;
+  int64 checked = 2;
+  int64 skipped = 3;
+  int64 offline = 4;
+}
+
 // GetLatestRequest selects a scope by scope ID, label ("Quick review",
 // "Docker") or absolute folder path.
 message GetLatestRequest {
@@ -195,6 +280,9 @@ message CompareCapturesRequest {
   string query = 6;
   // 0 returns every matching change.
   int32 limit = 7;
+  // Set both IDs to compare a specific pair instead of using days.
+  int64 from_id = 8;
+  int64 to_id = 9;
 }
 
 // CompareCapturesResponse holds both endpoints and the ranked changes.
@@ -214,6 +302,9 @@ message CaptureRequest {
   string scope = 1;
   // Optional category for a folder scope.
   string kind = 2;
+  // Absolute paths skipped during the scan.
+  repeated string exclusions = 3;
+  bool detail = 4;
 }
 
 // CaptureResponse is one event in a capture stream.
@@ -228,4 +319,5 @@ message CaptureResponse {
 // CaptureProgress reports how far a capture has come.
 message CaptureProgress {
   int64 files_checked = 1;
+  bool saving = 2;
 }

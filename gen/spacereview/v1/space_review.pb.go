@@ -308,9 +308,12 @@ type Coverage struct {
 	Engine        string                 `protobuf:"bytes,11,opt,name=engine,proto3" json:"engine,omitempty"`
 	// Version of the labeling rules. Review candidates and labeled folders are
 	// compared only between captures that used the same rules.
-	Labels        int32 `protobuf:"varint,12,opt,name=labels,proto3" json:"labels,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Labels         int32    `protobuf:"varint,12,opt,name=labels,proto3" json:"labels,omitempty"`
+	Exclusions     []string `protobuf:"bytes,13,rep,name=exclusions,proto3" json:"exclusions,omitempty"`
+	Inventory      bool     `protobuf:"varint,14,opt,name=inventory,proto3" json:"inventory,omitempty"`
+	EstimatedPaths []string `protobuf:"bytes,15,rep,name=estimated_paths,json=estimatedPaths,proto3" json:"estimated_paths,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Coverage) Reset() {
@@ -427,6 +430,27 @@ func (x *Coverage) GetLabels() int32 {
 	return 0
 }
 
+func (x *Coverage) GetExclusions() []string {
+	if x != nil {
+		return x.Exclusions
+	}
+	return nil
+}
+
+func (x *Coverage) GetInventory() bool {
+	if x != nil {
+		return x.Inventory
+	}
+	return false
+}
+
+func (x *Coverage) GetEstimatedPaths() []string {
+	if x != nil {
+		return x.EstimatedPaths
+	}
+	return nil
+}
+
 // Record is one reading. Bytes is -1 when the size is unknown. A file
 // reading's kind is its category; its removal guidance follows from the
 // category. Its detail explains a label that came from a launcher, tool or
@@ -448,6 +472,7 @@ type Record struct {
 	Idle             bool                   `protobuf:"varint,13,opt,name=idle,proto3" json:"idle,omitempty"`
 	ReclaimableBytes int64                  `protobuf:"varint,14,opt,name=reclaimable_bytes,json=reclaimableBytes,proto3" json:"reclaimable_bytes,omitempty"`
 	Partial          bool                   `protobuf:"varint,15,opt,name=partial,proto3" json:"partial,omitempty"`
+	LogicalBytes     int64                  `protobuf:"varint,16,opt,name=logical_bytes,json=logicalBytes,proto3" json:"logical_bytes,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -585,6 +610,13 @@ func (x *Record) GetPartial() bool {
 		return x.Partial
 	}
 	return false
+}
+
+func (x *Record) GetLogicalBytes() int64 {
+	if x != nil {
+		return x.LogicalBytes
+	}
+	return 0
 }
 
 // Snapshot is one saved capture.
@@ -1065,6 +1097,619 @@ func (x *ListScopesResponse) GetScopes() []*Snapshot {
 	return nil
 }
 
+// ListHistoryRequest selects a saved scope by ID, label or folder path.
+type ListHistoryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Scope         string                 `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListHistoryRequest) Reset() {
+	*x = ListHistoryRequest{}
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListHistoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListHistoryRequest) ProtoMessage() {}
+
+func (x *ListHistoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListHistoryRequest.ProtoReflect.Descriptor instead.
+func (*ListHistoryRequest) Descriptor() ([]byte, []int) {
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ListHistoryRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+// ListHistoryResponse lists captures in reverse save order.
+type ListHistoryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Captures      []*Snapshot            `protobuf:"bytes,1,rep,name=captures,proto3" json:"captures,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListHistoryResponse) Reset() {
+	*x = ListHistoryResponse{}
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListHistoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListHistoryResponse) ProtoMessage() {}
+
+func (x *ListHistoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListHistoryResponse.ProtoReflect.Descriptor instead.
+func (*ListHistoryResponse) Descriptor() ([]byte, []int) {
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ListHistoryResponse) GetCaptures() []*Snapshot {
+	if x != nil {
+		return x.Captures
+	}
+	return nil
+}
+
+// GetInventoryRequest selects the direct children of a folder, or files at
+// any depth, from the latest detailed capture of a scope.
+type GetInventoryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CaptureId     int64                  `protobuf:"varint,1,opt,name=capture_id,json=captureId,proto3" json:"capture_id,omitempty"`
+	Parent        string                 `protobuf:"bytes,2,opt,name=parent,proto3" json:"parent,omitempty"`
+	Files         bool                   `protobuf:"varint,3,opt,name=files,proto3" json:"files,omitempty"`
+	Query         string                 `protobuf:"bytes,4,opt,name=query,proto3" json:"query,omitempty"`
+	Within        string                 `protobuf:"bytes,5,opt,name=within,proto3" json:"within,omitempty"`
+	Extension     string                 `protobuf:"bytes,6,opt,name=extension,proto3" json:"extension,omitempty"`
+	MinimumBytes  int64                  `protobuf:"varint,7,opt,name=minimum_bytes,json=minimumBytes,proto3" json:"minimum_bytes,omitempty"`
+	ModifiedSince *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=modified_since,json=modifiedSince,proto3" json:"modified_since,omitempty"`
+	Offset        int32                  `protobuf:"varint,9,opt,name=offset,proto3" json:"offset,omitempty"`
+	Limit         int32                  `protobuf:"varint,10,opt,name=limit,proto3" json:"limit,omitempty"`
+	// 0 sorts by name, 1 by bytes, 2 by category and 3 by modification time.
+	SortColumn    int32  `protobuf:"varint,11,opt,name=sort_column,json=sortColumn,proto3" json:"sort_column,omitempty"`
+	Ascending     bool   `protobuf:"varint,12,opt,name=ascending,proto3" json:"ascending,omitempty"`
+	Removal       string `protobuf:"bytes,13,opt,name=removal,proto3" json:"removal,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetInventoryRequest) Reset() {
+	*x = GetInventoryRequest{}
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInventoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInventoryRequest) ProtoMessage() {}
+
+func (x *GetInventoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInventoryRequest.ProtoReflect.Descriptor instead.
+func (*GetInventoryRequest) Descriptor() ([]byte, []int) {
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *GetInventoryRequest) GetCaptureId() int64 {
+	if x != nil {
+		return x.CaptureId
+	}
+	return 0
+}
+
+func (x *GetInventoryRequest) GetParent() string {
+	if x != nil {
+		return x.Parent
+	}
+	return ""
+}
+
+func (x *GetInventoryRequest) GetFiles() bool {
+	if x != nil {
+		return x.Files
+	}
+	return false
+}
+
+func (x *GetInventoryRequest) GetQuery() string {
+	if x != nil {
+		return x.Query
+	}
+	return ""
+}
+
+func (x *GetInventoryRequest) GetWithin() string {
+	if x != nil {
+		return x.Within
+	}
+	return ""
+}
+
+func (x *GetInventoryRequest) GetExtension() string {
+	if x != nil {
+		return x.Extension
+	}
+	return ""
+}
+
+func (x *GetInventoryRequest) GetMinimumBytes() int64 {
+	if x != nil {
+		return x.MinimumBytes
+	}
+	return 0
+}
+
+func (x *GetInventoryRequest) GetModifiedSince() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ModifiedSince
+	}
+	return nil
+}
+
+func (x *GetInventoryRequest) GetOffset() int32 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *GetInventoryRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *GetInventoryRequest) GetSortColumn() int32 {
+	if x != nil {
+		return x.SortColumn
+	}
+	return 0
+}
+
+func (x *GetInventoryRequest) GetAscending() bool {
+	if x != nil {
+		return x.Ascending
+	}
+	return false
+}
+
+func (x *GetInventoryRequest) GetRemoval() string {
+	if x != nil {
+		return x.Removal
+	}
+	return ""
+}
+
+// GetInventoryResponse contains the requested page and full match count.
+type GetInventoryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []*Record              `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	Total         int32                  `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetInventoryResponse) Reset() {
+	*x = GetInventoryResponse{}
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInventoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInventoryResponse) ProtoMessage() {}
+
+func (x *GetInventoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInventoryResponse.ProtoReflect.Descriptor instead.
+func (*GetInventoryResponse) Descriptor() ([]byte, []int) {
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *GetInventoryResponse) GetItems() []*Record {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *GetInventoryResponse) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+// StreamInventoryRequest selects an inventory filter and sort order.
+type StreamInventoryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Filter        *GetInventoryRequest   `protobuf:"bytes,1,opt,name=filter,proto3" json:"filter,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamInventoryRequest) Reset() {
+	*x = StreamInventoryRequest{}
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamInventoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamInventoryRequest) ProtoMessage() {}
+
+func (x *StreamInventoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamInventoryRequest.ProtoReflect.Descriptor instead.
+func (*StreamInventoryRequest) Descriptor() ([]byte, []int) {
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *StreamInventoryRequest) GetFilter() *GetInventoryRequest {
+	if x != nil {
+		return x.Filter
+	}
+	return nil
+}
+
+// StreamInventoryResponse is a bounded chunk of the filtered inventory.
+type StreamInventoryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []*Record              `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamInventoryResponse) Reset() {
+	*x = StreamInventoryResponse{}
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamInventoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamInventoryResponse) ProtoMessage() {}
+
+func (x *StreamInventoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamInventoryResponse.ProtoReflect.Descriptor instead.
+func (*StreamInventoryResponse) Descriptor() ([]byte, []int) {
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *StreamInventoryResponse) GetItems() []*Record {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+// FindDuplicatesRequest searches a current file inventory. An empty folder
+// searches the entire scope.
+type FindDuplicatesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CaptureId     int64                  `protobuf:"varint,1,opt,name=capture_id,json=captureId,proto3" json:"capture_id,omitempty"`
+	Folder        string                 `protobuf:"bytes,2,opt,name=folder,proto3" json:"folder,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FindDuplicatesRequest) Reset() {
+	*x = FindDuplicatesRequest{}
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FindDuplicatesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FindDuplicatesRequest) ProtoMessage() {}
+
+func (x *FindDuplicatesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FindDuplicatesRequest.ProtoReflect.Descriptor instead.
+func (*FindDuplicatesRequest) Descriptor() ([]byte, []int) {
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *FindDuplicatesRequest) GetCaptureId() int64 {
+	if x != nil {
+		return x.CaptureId
+	}
+	return 0
+}
+
+func (x *FindDuplicatesRequest) GetFolder() string {
+	if x != nil {
+		return x.Folder
+	}
+	return ""
+}
+
+// DuplicateCopy is one physical file and its observed hard link paths.
+type DuplicateCopy struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Paths          []string               `protobuf:"bytes,1,rep,name=paths,proto3" json:"paths,omitempty"`
+	AllocatedBytes int64                  `protobuf:"varint,2,opt,name=allocated_bytes,json=allocatedBytes,proto3" json:"allocated_bytes,omitempty"`
+	LinkCount      uint32                 `protobuf:"varint,3,opt,name=link_count,json=linkCount,proto3" json:"link_count,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DuplicateCopy) Reset() {
+	*x = DuplicateCopy{}
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DuplicateCopy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DuplicateCopy) ProtoMessage() {}
+
+func (x *DuplicateCopy) ProtoReflect() protoreflect.Message {
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DuplicateCopy.ProtoReflect.Descriptor instead.
+func (*DuplicateCopy) Descriptor() ([]byte, []int) {
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *DuplicateCopy) GetPaths() []string {
+	if x != nil {
+		return x.Paths
+	}
+	return nil
+}
+
+func (x *DuplicateCopy) GetAllocatedBytes() int64 {
+	if x != nil {
+		return x.AllocatedBytes
+	}
+	return 0
+}
+
+func (x *DuplicateCopy) GetLinkCount() uint32 {
+	if x != nil {
+		return x.LinkCount
+	}
+	return 0
+}
+
+// DuplicateGroup contains distinct physical files with the same content.
+type DuplicateGroup struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LogicalBytes  int64                  `protobuf:"varint,1,opt,name=logical_bytes,json=logicalBytes,proto3" json:"logical_bytes,omitempty"`
+	Copies        []*DuplicateCopy       `protobuf:"bytes,2,rep,name=copies,proto3" json:"copies,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DuplicateGroup) Reset() {
+	*x = DuplicateGroup{}
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DuplicateGroup) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DuplicateGroup) ProtoMessage() {}
+
+func (x *DuplicateGroup) ProtoReflect() protoreflect.Message {
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DuplicateGroup.ProtoReflect.Descriptor instead.
+func (*DuplicateGroup) Descriptor() ([]byte, []int) {
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *DuplicateGroup) GetLogicalBytes() int64 {
+	if x != nil {
+		return x.LogicalBytes
+	}
+	return 0
+}
+
+func (x *DuplicateGroup) GetCopies() []*DuplicateCopy {
+	if x != nil {
+		return x.Copies
+	}
+	return nil
+}
+
+// FindDuplicatesResponse lists verified matches and scan coverage.
+type FindDuplicatesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Groups        []*DuplicateGroup      `protobuf:"bytes,1,rep,name=groups,proto3" json:"groups,omitempty"`
+	Checked       int64                  `protobuf:"varint,2,opt,name=checked,proto3" json:"checked,omitempty"`
+	Skipped       int64                  `protobuf:"varint,3,opt,name=skipped,proto3" json:"skipped,omitempty"`
+	Offline       int64                  `protobuf:"varint,4,opt,name=offline,proto3" json:"offline,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FindDuplicatesResponse) Reset() {
+	*x = FindDuplicatesResponse{}
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FindDuplicatesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FindDuplicatesResponse) ProtoMessage() {}
+
+func (x *FindDuplicatesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FindDuplicatesResponse.ProtoReflect.Descriptor instead.
+func (*FindDuplicatesResponse) Descriptor() ([]byte, []int) {
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *FindDuplicatesResponse) GetGroups() []*DuplicateGroup {
+	if x != nil {
+		return x.Groups
+	}
+	return nil
+}
+
+func (x *FindDuplicatesResponse) GetChecked() int64 {
+	if x != nil {
+		return x.Checked
+	}
+	return 0
+}
+
+func (x *FindDuplicatesResponse) GetSkipped() int64 {
+	if x != nil {
+		return x.Skipped
+	}
+	return 0
+}
+
+func (x *FindDuplicatesResponse) GetOffline() int64 {
+	if x != nil {
+		return x.Offline
+	}
+	return 0
+}
+
 // GetLatestRequest selects a scope by scope ID, label ("Quick review",
 // "Docker") or absolute folder path.
 type GetLatestRequest struct {
@@ -1082,7 +1727,7 @@ type GetLatestRequest struct {
 
 func (x *GetLatestRequest) Reset() {
 	*x = GetLatestRequest{}
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[12]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1094,7 +1739,7 @@ func (x *GetLatestRequest) String() string {
 func (*GetLatestRequest) ProtoMessage() {}
 
 func (x *GetLatestRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[12]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1107,7 +1752,7 @@ func (x *GetLatestRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetLatestRequest.ProtoReflect.Descriptor instead.
 func (*GetLatestRequest) Descriptor() ([]byte, []int) {
-	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{12}
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetLatestRequest) GetScope() string {
@@ -1150,7 +1795,7 @@ type GetLatestResponse struct {
 
 func (x *GetLatestResponse) Reset() {
 	*x = GetLatestResponse{}
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[13]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1162,7 +1807,7 @@ func (x *GetLatestResponse) String() string {
 func (*GetLatestResponse) ProtoMessage() {}
 
 func (x *GetLatestResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[13]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1175,7 +1820,7 @@ func (x *GetLatestResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetLatestResponse.ProtoReflect.Descriptor instead.
 func (*GetLatestResponse) Descriptor() ([]byte, []int) {
-	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{13}
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *GetLatestResponse) GetSnapshot() *Snapshot {
@@ -1204,14 +1849,17 @@ type CompareCapturesRequest struct {
 	Direction    Direction `protobuf:"varint,5,opt,name=direction,proto3,enum=spacereview.v1.Direction" json:"direction,omitempty"`
 	Query        string    `protobuf:"bytes,6,opt,name=query,proto3" json:"query,omitempty"`
 	// 0 returns every matching change.
-	Limit         int32 `protobuf:"varint,7,opt,name=limit,proto3" json:"limit,omitempty"`
+	Limit int32 `protobuf:"varint,7,opt,name=limit,proto3" json:"limit,omitempty"`
+	// Set both IDs to compare a specific pair instead of using days.
+	FromId        int64 `protobuf:"varint,8,opt,name=from_id,json=fromId,proto3" json:"from_id,omitempty"`
+	ToId          int64 `protobuf:"varint,9,opt,name=to_id,json=toId,proto3" json:"to_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CompareCapturesRequest) Reset() {
 	*x = CompareCapturesRequest{}
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[14]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1223,7 +1871,7 @@ func (x *CompareCapturesRequest) String() string {
 func (*CompareCapturesRequest) ProtoMessage() {}
 
 func (x *CompareCapturesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[14]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1236,7 +1884,7 @@ func (x *CompareCapturesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompareCapturesRequest.ProtoReflect.Descriptor instead.
 func (*CompareCapturesRequest) Descriptor() ([]byte, []int) {
-	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{14}
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *CompareCapturesRequest) GetScope() string {
@@ -1288,6 +1936,20 @@ func (x *CompareCapturesRequest) GetLimit() int32 {
 	return 0
 }
 
+func (x *CompareCapturesRequest) GetFromId() int64 {
+	if x != nil {
+		return x.FromId
+	}
+	return 0
+}
+
+func (x *CompareCapturesRequest) GetToId() int64 {
+	if x != nil {
+		return x.ToId
+	}
+	return 0
+}
+
 // CompareCapturesResponse holds both endpoints and the ranked changes.
 type CompareCapturesResponse struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
@@ -1304,7 +1966,7 @@ type CompareCapturesResponse struct {
 
 func (x *CompareCapturesResponse) Reset() {
 	*x = CompareCapturesResponse{}
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[15]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1316,7 +1978,7 @@ func (x *CompareCapturesResponse) String() string {
 func (*CompareCapturesResponse) ProtoMessage() {}
 
 func (x *CompareCapturesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[15]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1329,7 +1991,7 @@ func (x *CompareCapturesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompareCapturesResponse.ProtoReflect.Descriptor instead.
 func (*CompareCapturesResponse) Descriptor() ([]byte, []int) {
-	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{15}
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CompareCapturesResponse) GetLatest() *Snapshot {
@@ -1380,14 +2042,17 @@ type CaptureRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Scope string                 `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
 	// Optional category for a folder scope.
-	Kind          string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Kind string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	// Absolute paths skipped during the scan.
+	Exclusions    []string `protobuf:"bytes,3,rep,name=exclusions,proto3" json:"exclusions,omitempty"`
+	Detail        bool     `protobuf:"varint,4,opt,name=detail,proto3" json:"detail,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CaptureRequest) Reset() {
 	*x = CaptureRequest{}
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[16]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1399,7 +2064,7 @@ func (x *CaptureRequest) String() string {
 func (*CaptureRequest) ProtoMessage() {}
 
 func (x *CaptureRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[16]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1412,7 +2077,7 @@ func (x *CaptureRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CaptureRequest.ProtoReflect.Descriptor instead.
 func (*CaptureRequest) Descriptor() ([]byte, []int) {
-	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{16}
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CaptureRequest) GetScope() string {
@@ -1427,6 +2092,20 @@ func (x *CaptureRequest) GetKind() string {
 		return x.Kind
 	}
 	return ""
+}
+
+func (x *CaptureRequest) GetExclusions() []string {
+	if x != nil {
+		return x.Exclusions
+	}
+	return nil
+}
+
+func (x *CaptureRequest) GetDetail() bool {
+	if x != nil {
+		return x.Detail
+	}
+	return false
 }
 
 // CaptureResponse is one event in a capture stream.
@@ -1445,7 +2124,7 @@ type CaptureResponse struct {
 
 func (x *CaptureResponse) Reset() {
 	*x = CaptureResponse{}
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[17]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1457,7 +2136,7 @@ func (x *CaptureResponse) String() string {
 func (*CaptureResponse) ProtoMessage() {}
 
 func (x *CaptureResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[17]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1470,7 +2149,7 @@ func (x *CaptureResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CaptureResponse.ProtoReflect.Descriptor instead.
 func (*CaptureResponse) Descriptor() ([]byte, []int) {
-	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{17}
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *CaptureResponse) GetEvent() isCaptureResponse_Event {
@@ -1518,13 +2197,14 @@ func (*CaptureResponse_Snapshot) isCaptureResponse_Event() {}
 type CaptureProgress struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	FilesChecked  int64                  `protobuf:"varint,1,opt,name=files_checked,json=filesChecked,proto3" json:"files_checked,omitempty"`
+	Saving        bool                   `protobuf:"varint,2,opt,name=saving,proto3" json:"saving,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CaptureProgress) Reset() {
 	*x = CaptureProgress{}
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[18]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1536,7 +2216,7 @@ func (x *CaptureProgress) String() string {
 func (*CaptureProgress) ProtoMessage() {}
 
 func (x *CaptureProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_spacereview_v1_space_review_proto_msgTypes[18]
+	mi := &file_spacereview_v1_space_review_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1549,7 +2229,7 @@ func (x *CaptureProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CaptureProgress.ProtoReflect.Descriptor instead.
 func (*CaptureProgress) Descriptor() ([]byte, []int) {
-	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{18}
+	return file_spacereview_v1_space_review_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *CaptureProgress) GetFilesChecked() int64 {
@@ -1557,6 +2237,13 @@ func (x *CaptureProgress) GetFilesChecked() int64 {
 		return x.FilesChecked
 	}
 	return 0
+}
+
+func (x *CaptureProgress) GetSaving() bool {
+	if x != nil {
+		return x.Saving
+	}
+	return false
 }
 
 var File_spacereview_v1_space_review_proto protoreflect.FileDescriptor
@@ -1573,7 +2260,7 @@ const file_spacereview_v1_space_review_proto_rawDesc = "" +
 	"free_bytes\x18\x04 \x01(\x03R\tfreeBytes\x12\x1d\n" +
 	"\n" +
 	"journal_id\x18\x05 \x01(\x04R\tjournalId\x12\x19\n" +
-	"\bnext_usn\x18\x06 \x01(\x03R\anextUsn\"\xa4\x03\n" +
+	"\bnext_usn\x18\x06 \x01(\x03R\anextUsn\"\x8b\x04\n" +
 	"\bCoverage\x128\n" +
 	"\n" +
 	"scope_kind\x18\x01 \x01(\x0e2\x19.spacereview.v1.ScopeKindR\tscopeKind\x12-\n" +
@@ -1591,7 +2278,12 @@ const file_spacereview_v1_space_review_proto_rawDesc = "" +
 	"\x04kind\x18\n" +
 	" \x01(\tR\x04kind\x12\x16\n" +
 	"\x06engine\x18\v \x01(\tR\x06engine\x12\x16\n" +
-	"\x06labels\x18\f \x01(\x05R\x06labels\"\xad\x03\n" +
+	"\x06labels\x18\f \x01(\x05R\x06labels\x12\x1e\n" +
+	"\n" +
+	"exclusions\x18\r \x03(\tR\n" +
+	"exclusions\x12\x1c\n" +
+	"\tinventory\x18\x0e \x01(\bR\tinventory\x12'\n" +
+	"\x0festimated_paths\x18\x0f \x03(\tR\x0eestimatedPaths\"\xd2\x03\n" +
 	"\x06Record\x12.\n" +
 	"\x06series\x18\x01 \x01(\x0e2\x16.spacereview.v1.SeriesR\x06series\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x12\n" +
@@ -1608,7 +2300,8 @@ const file_spacereview_v1_space_review_proto_rawDesc = "" +
 	"\x05group\x18\f \x01(\tR\x05group\x12\x12\n" +
 	"\x04idle\x18\r \x01(\bR\x04idle\x12+\n" +
 	"\x11reclaimable_bytes\x18\x0e \x01(\x03R\x10reclaimableBytes\x12\x18\n" +
-	"\apartial\x18\x0f \x01(\bR\apartial\"\xf0\x01\n" +
+	"\apartial\x18\x0f \x01(\bR\apartial\x12#\n" +
+	"\rlogical_bytes\x18\x10 \x01(\x03R\flogicalBytes\"\xf0\x01\n" +
 	"\bSnapshot\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x19\n" +
 	"\bscope_id\x18\x02 \x01(\tR\ascopeId\x12\x14\n" +
@@ -1640,7 +2333,52 @@ const file_spacereview_v1_space_review_proto_rawDesc = "" +
 	"\x06drives\x18\x01 \x03(\v2\x15.spacereview.v1.DriveR\x06drives\"\x13\n" +
 	"\x11ListScopesRequest\"F\n" +
 	"\x12ListScopesResponse\x120\n" +
-	"\x06scopes\x18\x01 \x03(\v2\x18.spacereview.v1.SnapshotR\x06scopes\"\x84\x01\n" +
+	"\x06scopes\x18\x01 \x03(\v2\x18.spacereview.v1.SnapshotR\x06scopes\"*\n" +
+	"\x12ListHistoryRequest\x12\x14\n" +
+	"\x05scope\x18\x01 \x01(\tR\x05scope\"K\n" +
+	"\x13ListHistoryResponse\x124\n" +
+	"\bcaptures\x18\x01 \x03(\v2\x18.spacereview.v1.SnapshotR\bcaptures\"\x9d\x03\n" +
+	"\x13GetInventoryRequest\x12\x1d\n" +
+	"\n" +
+	"capture_id\x18\x01 \x01(\x03R\tcaptureId\x12\x16\n" +
+	"\x06parent\x18\x02 \x01(\tR\x06parent\x12\x14\n" +
+	"\x05files\x18\x03 \x01(\bR\x05files\x12\x14\n" +
+	"\x05query\x18\x04 \x01(\tR\x05query\x12\x16\n" +
+	"\x06within\x18\x05 \x01(\tR\x06within\x12\x1c\n" +
+	"\textension\x18\x06 \x01(\tR\textension\x12#\n" +
+	"\rminimum_bytes\x18\a \x01(\x03R\fminimumBytes\x12A\n" +
+	"\x0emodified_since\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\rmodifiedSince\x12\x16\n" +
+	"\x06offset\x18\t \x01(\x05R\x06offset\x12\x14\n" +
+	"\x05limit\x18\n" +
+	" \x01(\x05R\x05limit\x12\x1f\n" +
+	"\vsort_column\x18\v \x01(\x05R\n" +
+	"sortColumn\x12\x1c\n" +
+	"\tascending\x18\f \x01(\bR\tascending\x12\x18\n" +
+	"\aremoval\x18\r \x01(\tR\aremoval\"Z\n" +
+	"\x14GetInventoryResponse\x12,\n" +
+	"\x05items\x18\x01 \x03(\v2\x16.spacereview.v1.RecordR\x05items\x12\x14\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total\"U\n" +
+	"\x16StreamInventoryRequest\x12;\n" +
+	"\x06filter\x18\x01 \x01(\v2#.spacereview.v1.GetInventoryRequestR\x06filter\"G\n" +
+	"\x17StreamInventoryResponse\x12,\n" +
+	"\x05items\x18\x01 \x03(\v2\x16.spacereview.v1.RecordR\x05items\"N\n" +
+	"\x15FindDuplicatesRequest\x12\x1d\n" +
+	"\n" +
+	"capture_id\x18\x01 \x01(\x03R\tcaptureId\x12\x16\n" +
+	"\x06folder\x18\x02 \x01(\tR\x06folder\"m\n" +
+	"\rDuplicateCopy\x12\x14\n" +
+	"\x05paths\x18\x01 \x03(\tR\x05paths\x12'\n" +
+	"\x0fallocated_bytes\x18\x02 \x01(\x03R\x0eallocatedBytes\x12\x1d\n" +
+	"\n" +
+	"link_count\x18\x03 \x01(\rR\tlinkCount\"l\n" +
+	"\x0eDuplicateGroup\x12#\n" +
+	"\rlogical_bytes\x18\x01 \x01(\x03R\flogicalBytes\x125\n" +
+	"\x06copies\x18\x02 \x03(\v2\x1d.spacereview.v1.DuplicateCopyR\x06copies\"\x9e\x01\n" +
+	"\x16FindDuplicatesResponse\x126\n" +
+	"\x06groups\x18\x01 \x03(\v2\x1e.spacereview.v1.DuplicateGroupR\x06groups\x12\x18\n" +
+	"\achecked\x18\x02 \x01(\x03R\achecked\x12\x18\n" +
+	"\askipped\x18\x03 \x01(\x03R\askipped\x12\x18\n" +
+	"\aoffline\x18\x04 \x01(\x03R\aoffline\"\x84\x01\n" +
 	"\x10GetLatestRequest\x12\x14\n" +
 	"\x05scope\x18\x01 \x01(\tR\x05scope\x12.\n" +
 	"\x06series\x18\x02 \x01(\x0e2\x16.spacereview.v1.SeriesR\x06series\x12\x14\n" +
@@ -1648,7 +2386,7 @@ const file_spacereview_v1_space_review_proto_rawDesc = "" +
 	"\x05limit\x18\x04 \x01(\x05R\x05limit\"z\n" +
 	"\x11GetLatestResponse\x124\n" +
 	"\bsnapshot\x18\x01 \x01(\v2\x18.spacereview.v1.SnapshotR\bsnapshot\x12/\n" +
-	"\x13refresh_recommended\x18\x02 \x01(\bR\x12refreshRecommended\"\xfc\x01\n" +
+	"\x13refresh_recommended\x18\x02 \x01(\bR\x12refreshRecommended\"\xaa\x02\n" +
 	"\x16CompareCapturesRequest\x12\x14\n" +
 	"\x05scope\x18\x01 \x01(\tR\x05scope\x12\x12\n" +
 	"\x04days\x18\x02 \x01(\x05R\x04days\x12.\n" +
@@ -1656,23 +2394,30 @@ const file_spacereview_v1_space_review_proto_rawDesc = "" +
 	"\rminimum_bytes\x18\x04 \x01(\x03R\fminimumBytes\x127\n" +
 	"\tdirection\x18\x05 \x01(\x0e2\x19.spacereview.v1.DirectionR\tdirection\x12\x14\n" +
 	"\x05query\x18\x06 \x01(\tR\x05query\x12\x14\n" +
-	"\x05limit\x18\a \x01(\x05R\x05limit\"\xd1\x02\n" +
+	"\x05limit\x18\a \x01(\x05R\x05limit\x12\x17\n" +
+	"\afrom_id\x18\b \x01(\x03R\x06fromId\x12\x13\n" +
+	"\x05to_id\x18\t \x01(\x03R\x04toId\"\xd1\x02\n" +
 	"\x17CompareCapturesResponse\x120\n" +
 	"\x06latest\x18\x01 \x01(\v2\x18.spacereview.v1.SnapshotR\x06latest\x124\n" +
 	"\bbaseline\x18\x02 \x01(\v2\x18.spacereview.v1.SnapshotR\bbaseline\x12!\n" +
 	"\fshort_window\x18\x03 \x01(\bR\vshortWindow\x128\n" +
 	"\x18omitted_coverage_changes\x18\x04 \x01(\x05R\x16omittedCoverageChanges\x12?\n" +
 	"\rdrive_changes\x18\x05 \x03(\v2\x1a.spacereview.v1.DriveDeltaR\fdriveChanges\x120\n" +
-	"\achanges\x18\x06 \x03(\v2\x16.spacereview.v1.ChangeR\achanges\":\n" +
+	"\achanges\x18\x06 \x03(\v2\x16.spacereview.v1.ChangeR\achanges\"r\n" +
 	"\x0eCaptureRequest\x12\x14\n" +
 	"\x05scope\x18\x01 \x01(\tR\x05scope\x12\x12\n" +
-	"\x04kind\x18\x02 \x01(\tR\x04kind\"\x91\x01\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x1e\n" +
+	"\n" +
+	"exclusions\x18\x03 \x03(\tR\n" +
+	"exclusions\x12\x16\n" +
+	"\x06detail\x18\x04 \x01(\bR\x06detail\"\x91\x01\n" +
 	"\x0fCaptureResponse\x12=\n" +
 	"\bprogress\x18\x01 \x01(\v2\x1f.spacereview.v1.CaptureProgressH\x00R\bprogress\x126\n" +
 	"\bsnapshot\x18\x02 \x01(\v2\x18.spacereview.v1.SnapshotH\x00R\bsnapshotB\a\n" +
-	"\x05event\"6\n" +
+	"\x05event\"N\n" +
 	"\x0fCaptureProgress\x12#\n" +
-	"\rfiles_checked\x18\x01 \x01(\x03R\ffilesChecked*T\n" +
+	"\rfiles_checked\x18\x01 \x01(\x03R\ffilesChecked\x12\x16\n" +
+	"\x06saving\x18\x02 \x01(\bR\x06saving*T\n" +
 	"\tScopeKind\x12\x1a\n" +
 	"\x16SCOPE_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10SCOPE_KIND_FILES\x10\x01\x12\x15\n" +
@@ -1696,13 +2441,17 @@ const file_spacereview_v1_space_review_proto_rawDesc = "" +
 	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eDIRECTION_BOTH\x10\x01\x12\x14\n" +
 	"\x10DIRECTION_GROWTH\x10\x02\x12\x13\n" +
-	"\x0fDIRECTION_FREED\x10\x032\xa0\x04\n" +
+	"\x0fDIRECTION_FREED\x10\x032\x9a\a\n" +
 	"\x12SpaceReviewService\x12\\\n" +
 	"\rGetServerInfo\x12$.spacereview.v1.GetServerInfoRequest\x1a%.spacereview.v1.GetServerInfoResponse\x12S\n" +
 	"\n" +
 	"ListDrives\x12!.spacereview.v1.ListDrivesRequest\x1a\".spacereview.v1.ListDrivesResponse\x12S\n" +
 	"\n" +
-	"ListScopes\x12!.spacereview.v1.ListScopesRequest\x1a\".spacereview.v1.ListScopesResponse\x12P\n" +
+	"ListScopes\x12!.spacereview.v1.ListScopesRequest\x1a\".spacereview.v1.ListScopesResponse\x12V\n" +
+	"\vListHistory\x12\".spacereview.v1.ListHistoryRequest\x1a#.spacereview.v1.ListHistoryResponse\x12Y\n" +
+	"\fGetInventory\x12#.spacereview.v1.GetInventoryRequest\x1a$.spacereview.v1.GetInventoryResponse\x12d\n" +
+	"\x0fStreamInventory\x12&.spacereview.v1.StreamInventoryRequest\x1a'.spacereview.v1.StreamInventoryResponse0\x01\x12_\n" +
+	"\x0eFindDuplicates\x12%.spacereview.v1.FindDuplicatesRequest\x1a&.spacereview.v1.FindDuplicatesResponse\x12P\n" +
 	"\tGetLatest\x12 .spacereview.v1.GetLatestRequest\x1a!.spacereview.v1.GetLatestResponse\x12b\n" +
 	"\x0fCompareCaptures\x12&.spacereview.v1.CompareCapturesRequest\x1a'.spacereview.v1.CompareCapturesResponse\x12L\n" +
 	"\aCapture\x12\x1e.spacereview.v1.CaptureRequest\x1a\x1f.spacereview.v1.CaptureResponse0\x01B@Z>github.com/liljestk/VIbeClean/gen/spacereview/v1;spacereviewv1b\x06proto3"
@@ -1720,7 +2469,7 @@ func file_spacereview_v1_space_review_proto_rawDescGZIP() []byte {
 }
 
 var file_spacereview_v1_space_review_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_spacereview_v1_space_review_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_spacereview_v1_space_review_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_spacereview_v1_space_review_proto_goTypes = []any{
 	(ScopeKind)(0),                  // 0: spacereview.v1.ScopeKind
 	(Series)(0),                     // 1: spacereview.v1.Series
@@ -1737,21 +2486,31 @@ var file_spacereview_v1_space_review_proto_goTypes = []any{
 	(*ListDrivesResponse)(nil),      // 12: spacereview.v1.ListDrivesResponse
 	(*ListScopesRequest)(nil),       // 13: spacereview.v1.ListScopesRequest
 	(*ListScopesResponse)(nil),      // 14: spacereview.v1.ListScopesResponse
-	(*GetLatestRequest)(nil),        // 15: spacereview.v1.GetLatestRequest
-	(*GetLatestResponse)(nil),       // 16: spacereview.v1.GetLatestResponse
-	(*CompareCapturesRequest)(nil),  // 17: spacereview.v1.CompareCapturesRequest
-	(*CompareCapturesResponse)(nil), // 18: spacereview.v1.CompareCapturesResponse
-	(*CaptureRequest)(nil),          // 19: spacereview.v1.CaptureRequest
-	(*CaptureResponse)(nil),         // 20: spacereview.v1.CaptureResponse
-	(*CaptureProgress)(nil),         // 21: spacereview.v1.CaptureProgress
-	(*timestamppb.Timestamp)(nil),   // 22: google.protobuf.Timestamp
+	(*ListHistoryRequest)(nil),      // 15: spacereview.v1.ListHistoryRequest
+	(*ListHistoryResponse)(nil),     // 16: spacereview.v1.ListHistoryResponse
+	(*GetInventoryRequest)(nil),     // 17: spacereview.v1.GetInventoryRequest
+	(*GetInventoryResponse)(nil),    // 18: spacereview.v1.GetInventoryResponse
+	(*StreamInventoryRequest)(nil),  // 19: spacereview.v1.StreamInventoryRequest
+	(*StreamInventoryResponse)(nil), // 20: spacereview.v1.StreamInventoryResponse
+	(*FindDuplicatesRequest)(nil),   // 21: spacereview.v1.FindDuplicatesRequest
+	(*DuplicateCopy)(nil),           // 22: spacereview.v1.DuplicateCopy
+	(*DuplicateGroup)(nil),          // 23: spacereview.v1.DuplicateGroup
+	(*FindDuplicatesResponse)(nil),  // 24: spacereview.v1.FindDuplicatesResponse
+	(*GetLatestRequest)(nil),        // 25: spacereview.v1.GetLatestRequest
+	(*GetLatestResponse)(nil),       // 26: spacereview.v1.GetLatestResponse
+	(*CompareCapturesRequest)(nil),  // 27: spacereview.v1.CompareCapturesRequest
+	(*CompareCapturesResponse)(nil), // 28: spacereview.v1.CompareCapturesResponse
+	(*CaptureRequest)(nil),          // 29: spacereview.v1.CaptureRequest
+	(*CaptureResponse)(nil),         // 30: spacereview.v1.CaptureResponse
+	(*CaptureProgress)(nil),         // 31: spacereview.v1.CaptureProgress
+	(*timestamppb.Timestamp)(nil),   // 32: google.protobuf.Timestamp
 }
 var file_spacereview_v1_space_review_proto_depIdxs = []int32{
 	0,  // 0: spacereview.v1.Coverage.scope_kind:type_name -> spacereview.v1.ScopeKind
 	3,  // 1: spacereview.v1.Coverage.drives:type_name -> spacereview.v1.Drive
 	1,  // 2: spacereview.v1.Record.series:type_name -> spacereview.v1.Series
-	22, // 3: spacereview.v1.Record.modified:type_name -> google.protobuf.Timestamp
-	22, // 4: spacereview.v1.Snapshot.captured_at:type_name -> google.protobuf.Timestamp
+	32, // 3: spacereview.v1.Record.modified:type_name -> google.protobuf.Timestamp
+	32, // 4: spacereview.v1.Snapshot.captured_at:type_name -> google.protobuf.Timestamp
 	4,  // 5: spacereview.v1.Snapshot.coverage:type_name -> spacereview.v1.Coverage
 	5,  // 6: spacereview.v1.Snapshot.records:type_name -> spacereview.v1.Record
 	1,  // 7: spacereview.v1.Change.series:type_name -> spacereview.v1.Series
@@ -1759,33 +2518,48 @@ var file_spacereview_v1_space_review_proto_depIdxs = []int32{
 	5,  // 9: spacereview.v1.Change.after:type_name -> spacereview.v1.Record
 	3,  // 10: spacereview.v1.ListDrivesResponse.drives:type_name -> spacereview.v1.Drive
 	6,  // 11: spacereview.v1.ListScopesResponse.scopes:type_name -> spacereview.v1.Snapshot
-	1,  // 12: spacereview.v1.GetLatestRequest.series:type_name -> spacereview.v1.Series
-	6,  // 13: spacereview.v1.GetLatestResponse.snapshot:type_name -> spacereview.v1.Snapshot
-	1,  // 14: spacereview.v1.CompareCapturesRequest.series:type_name -> spacereview.v1.Series
-	2,  // 15: spacereview.v1.CompareCapturesRequest.direction:type_name -> spacereview.v1.Direction
-	6,  // 16: spacereview.v1.CompareCapturesResponse.latest:type_name -> spacereview.v1.Snapshot
-	6,  // 17: spacereview.v1.CompareCapturesResponse.baseline:type_name -> spacereview.v1.Snapshot
-	8,  // 18: spacereview.v1.CompareCapturesResponse.drive_changes:type_name -> spacereview.v1.DriveDelta
-	7,  // 19: spacereview.v1.CompareCapturesResponse.changes:type_name -> spacereview.v1.Change
-	21, // 20: spacereview.v1.CaptureResponse.progress:type_name -> spacereview.v1.CaptureProgress
-	6,  // 21: spacereview.v1.CaptureResponse.snapshot:type_name -> spacereview.v1.Snapshot
-	9,  // 22: spacereview.v1.SpaceReviewService.GetServerInfo:input_type -> spacereview.v1.GetServerInfoRequest
-	11, // 23: spacereview.v1.SpaceReviewService.ListDrives:input_type -> spacereview.v1.ListDrivesRequest
-	13, // 24: spacereview.v1.SpaceReviewService.ListScopes:input_type -> spacereview.v1.ListScopesRequest
-	15, // 25: spacereview.v1.SpaceReviewService.GetLatest:input_type -> spacereview.v1.GetLatestRequest
-	17, // 26: spacereview.v1.SpaceReviewService.CompareCaptures:input_type -> spacereview.v1.CompareCapturesRequest
-	19, // 27: spacereview.v1.SpaceReviewService.Capture:input_type -> spacereview.v1.CaptureRequest
-	10, // 28: spacereview.v1.SpaceReviewService.GetServerInfo:output_type -> spacereview.v1.GetServerInfoResponse
-	12, // 29: spacereview.v1.SpaceReviewService.ListDrives:output_type -> spacereview.v1.ListDrivesResponse
-	14, // 30: spacereview.v1.SpaceReviewService.ListScopes:output_type -> spacereview.v1.ListScopesResponse
-	16, // 31: spacereview.v1.SpaceReviewService.GetLatest:output_type -> spacereview.v1.GetLatestResponse
-	18, // 32: spacereview.v1.SpaceReviewService.CompareCaptures:output_type -> spacereview.v1.CompareCapturesResponse
-	20, // 33: spacereview.v1.SpaceReviewService.Capture:output_type -> spacereview.v1.CaptureResponse
-	28, // [28:34] is the sub-list for method output_type
-	22, // [22:28] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	6,  // 12: spacereview.v1.ListHistoryResponse.captures:type_name -> spacereview.v1.Snapshot
+	32, // 13: spacereview.v1.GetInventoryRequest.modified_since:type_name -> google.protobuf.Timestamp
+	5,  // 14: spacereview.v1.GetInventoryResponse.items:type_name -> spacereview.v1.Record
+	17, // 15: spacereview.v1.StreamInventoryRequest.filter:type_name -> spacereview.v1.GetInventoryRequest
+	5,  // 16: spacereview.v1.StreamInventoryResponse.items:type_name -> spacereview.v1.Record
+	22, // 17: spacereview.v1.DuplicateGroup.copies:type_name -> spacereview.v1.DuplicateCopy
+	23, // 18: spacereview.v1.FindDuplicatesResponse.groups:type_name -> spacereview.v1.DuplicateGroup
+	1,  // 19: spacereview.v1.GetLatestRequest.series:type_name -> spacereview.v1.Series
+	6,  // 20: spacereview.v1.GetLatestResponse.snapshot:type_name -> spacereview.v1.Snapshot
+	1,  // 21: spacereview.v1.CompareCapturesRequest.series:type_name -> spacereview.v1.Series
+	2,  // 22: spacereview.v1.CompareCapturesRequest.direction:type_name -> spacereview.v1.Direction
+	6,  // 23: spacereview.v1.CompareCapturesResponse.latest:type_name -> spacereview.v1.Snapshot
+	6,  // 24: spacereview.v1.CompareCapturesResponse.baseline:type_name -> spacereview.v1.Snapshot
+	8,  // 25: spacereview.v1.CompareCapturesResponse.drive_changes:type_name -> spacereview.v1.DriveDelta
+	7,  // 26: spacereview.v1.CompareCapturesResponse.changes:type_name -> spacereview.v1.Change
+	31, // 27: spacereview.v1.CaptureResponse.progress:type_name -> spacereview.v1.CaptureProgress
+	6,  // 28: spacereview.v1.CaptureResponse.snapshot:type_name -> spacereview.v1.Snapshot
+	9,  // 29: spacereview.v1.SpaceReviewService.GetServerInfo:input_type -> spacereview.v1.GetServerInfoRequest
+	11, // 30: spacereview.v1.SpaceReviewService.ListDrives:input_type -> spacereview.v1.ListDrivesRequest
+	13, // 31: spacereview.v1.SpaceReviewService.ListScopes:input_type -> spacereview.v1.ListScopesRequest
+	15, // 32: spacereview.v1.SpaceReviewService.ListHistory:input_type -> spacereview.v1.ListHistoryRequest
+	17, // 33: spacereview.v1.SpaceReviewService.GetInventory:input_type -> spacereview.v1.GetInventoryRequest
+	19, // 34: spacereview.v1.SpaceReviewService.StreamInventory:input_type -> spacereview.v1.StreamInventoryRequest
+	21, // 35: spacereview.v1.SpaceReviewService.FindDuplicates:input_type -> spacereview.v1.FindDuplicatesRequest
+	25, // 36: spacereview.v1.SpaceReviewService.GetLatest:input_type -> spacereview.v1.GetLatestRequest
+	27, // 37: spacereview.v1.SpaceReviewService.CompareCaptures:input_type -> spacereview.v1.CompareCapturesRequest
+	29, // 38: spacereview.v1.SpaceReviewService.Capture:input_type -> spacereview.v1.CaptureRequest
+	10, // 39: spacereview.v1.SpaceReviewService.GetServerInfo:output_type -> spacereview.v1.GetServerInfoResponse
+	12, // 40: spacereview.v1.SpaceReviewService.ListDrives:output_type -> spacereview.v1.ListDrivesResponse
+	14, // 41: spacereview.v1.SpaceReviewService.ListScopes:output_type -> spacereview.v1.ListScopesResponse
+	16, // 42: spacereview.v1.SpaceReviewService.ListHistory:output_type -> spacereview.v1.ListHistoryResponse
+	18, // 43: spacereview.v1.SpaceReviewService.GetInventory:output_type -> spacereview.v1.GetInventoryResponse
+	20, // 44: spacereview.v1.SpaceReviewService.StreamInventory:output_type -> spacereview.v1.StreamInventoryResponse
+	24, // 45: spacereview.v1.SpaceReviewService.FindDuplicates:output_type -> spacereview.v1.FindDuplicatesResponse
+	26, // 46: spacereview.v1.SpaceReviewService.GetLatest:output_type -> spacereview.v1.GetLatestResponse
+	28, // 47: spacereview.v1.SpaceReviewService.CompareCaptures:output_type -> spacereview.v1.CompareCapturesResponse
+	30, // 48: spacereview.v1.SpaceReviewService.Capture:output_type -> spacereview.v1.CaptureResponse
+	39, // [39:49] is the sub-list for method output_type
+	29, // [29:39] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_spacereview_v1_space_review_proto_init() }
@@ -1793,7 +2567,7 @@ func file_spacereview_v1_space_review_proto_init() {
 	if File_spacereview_v1_space_review_proto != nil {
 		return
 	}
-	file_spacereview_v1_space_review_proto_msgTypes[17].OneofWrappers = []any{
+	file_spacereview_v1_space_review_proto_msgTypes[27].OneofWrappers = []any{
 		(*CaptureResponse_Progress)(nil),
 		(*CaptureResponse_Snapshot)(nil),
 	}
@@ -1803,7 +2577,7 @@ func file_spacereview_v1_space_review_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_spacereview_v1_space_review_proto_rawDesc), len(file_spacereview_v1_space_review_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   19,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

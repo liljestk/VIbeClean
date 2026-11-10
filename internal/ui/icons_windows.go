@@ -134,6 +134,10 @@ var (
 	iconFolder   icon = func(p *pen) {
 		p.rounded(2, true, 2, 4, 9, 4, 11, 6.5, 22, 6.5, 22, 20, 2, 20)
 	}
+	iconFile icon = func(p *pen) {
+		p.poly(true, 5, 2, 14, 2, 20, 8, 20, 22, 5, 22)
+		p.poly(false, 14, 2, 14, 8, 20, 8)
+	}
 	iconBoxes icon = func(p *pen) {
 		p.poly(true, 12, 2, 21, 7, 21, 17, 12, 22, 3, 17, 3, 7)
 		p.poly(false, 3, 7, 12, 12, 21, 7)

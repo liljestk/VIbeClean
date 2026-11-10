@@ -64,24 +64,27 @@ var (
 // systemPalette follows the Windows app theme and high contrast setting.
 func systemPalette() palette {
 	if highContrast() {
-		sys := func(index int) color.NRGBA {
-			c := getSysColor.Call
-			value, _, _ := c(uintptr(index))
-			return color.NRGBA{R: uint8(value), G: uint8(value >> 8), B: uint8(value >> 16), A: 255}
-		}
-		const window, windowText, highlight, highlightText, grayText, hotLight = 5, 8, 13, 14, 17, 26
-		background, foreground := sys(window), sys(windowText)
-		return palette{
-			contrast: true, surface: background, chrome: background, well: background,
-			ink: foreground, quiet: foreground, line: foreground, blue: sys(hotLight),
-			accent: sys(highlight), onAccent: sys(highlightText), selected: sys(highlight),
-			grow: foreground, free: foreground, caution: foreground, track: sys(grayText),
-		}
+		return contrastPalette()
 	}
 	if prefersDark() {
 		return darkPalette
 	}
 	return lightPalette
+}
+
+func contrastPalette() palette {
+	sys := func(index int) color.NRGBA {
+		value, _, _ := getSysColor.Call(uintptr(index))
+		return color.NRGBA{R: uint8(value), G: uint8(value >> 8), B: uint8(value >> 16), A: 255}
+	}
+	const window, windowText, highlight, highlightText, grayText, hotLight = 5, 8, 13, 14, 17, 26
+	background, foreground := sys(window), sys(windowText)
+	return palette{
+		contrast: true, surface: background, chrome: background, well: background,
+		ink: foreground, quiet: foreground, line: foreground, blue: sys(hotLight),
+		accent: sys(highlight), onAccent: sys(highlightText), selected: sys(highlight),
+		grow: foreground, free: foreground, caution: foreground, track: sys(grayText),
+	}
 }
 
 var (
@@ -176,6 +179,7 @@ func newShaper() *text.Shaper {
 type theme struct {
 	palette
 	shaper *text.Shaper
+	access *accessFrame
 }
 
 // style describes one run of text.

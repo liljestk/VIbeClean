@@ -64,9 +64,76 @@ func (u *ui) openSelection(pane *rankedPane) {
 	}
 	path := row.Item.Path
 	if !row.Item.Directory {
-		path = filepath.Dir(path)
+		u.showFileInExplorer(path)
+		return
 	}
 	u.openFolder(path, "gui.open_selection", "Folder unavailable", true)
+}
+
+func (u *ui) showFileInExplorer(path string) {
+	go func() {
+		if err := revealFile(path); err != nil {
+			u.post(func() { u.showAlert("Could not show file in Explorer", err.Error()) })
+		}
+	}()
+}
+
+var (
+	shell32                    = windows.NewLazySystemDLL("shell32.dll")
+	shParseDisplayName         = shell32.NewProc("SHParseDisplayName")
+	shOpenFolderAndSelectItems = shell32.NewProc("SHOpenFolderAndSelectItems")
+)
+
+func revealFile(path string) error {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := windows.CoInitializeEx(0, windows.COINIT_APARTMENTTHREADED); err != nil && !errors.Is(err, syscall.Errno(1)) {
+		return err
+	}
+	defer windows.CoUninitialize()
+	var item unsafe.Pointer
+	if result, _, _ := shParseDisplayName.Call(uintptr(unsafe.Pointer(name)), 0, uintptr(unsafe.Pointer(&item)), 0, 0); result != 0 {
+		return syscall.Errno(result)
+	}
+	defer windows.CoTaskMemFree(item)
+	if result, _, _ := shOpenFolderAndSelectItems.Call(uintptr(item), 0, 0, 0); result != 0 {
+		return syscall.Errno(result)
+	}
+	return nil
+}
+
+func cleanupShortcut(kind string) (label, target string) {
+	switch kind {
+	case model.ProgramKind:
+		return "Installed apps", "ms-settings:appsfeatures"
+	case model.TempKind, model.RecoveryKind, model.SystemKind:
+		return "Windows Storage", "ms-settings:storagesense"
+	case model.RecycleKind:
+		return "Open Recycle Bin", "shell:RecycleBinFolder"
+	case model.DockerKind:
+		return "Review Docker", ""
+	}
+	return "", ""
+}
+
+func (u *ui) openCleanup(kind string) {
+	label, target := cleanupShortcut(kind)
+	switch {
+	case label == "":
+		return
+	case kind == model.DockerKind:
+		u.setView(viewDocker)
+	default:
+		go func() {
+			if err := openShellURL(target); err != nil {
+				u.post(func() { u.showAlert("Could not open "+label, err.Error()) })
+			}
+		}()
+	}
 }
 
 // closestFolder returns the nearest existing folder at or above path.
@@ -145,6 +212,7 @@ var (
 
 type comObject struct{ vtbl *[32]uintptr }
 
+//go:uintptrescapes
 func (o *comObject) call(method int, args ...uintptr) uintptr {
 	r, _, _ := syscall.SyscallN(o.vtbl[method], append([]uintptr{uintptr(unsafe.Pointer(o))}, args...)...)
 	return r
@@ -256,13 +324,17 @@ func writeClaudeBundle(path, executable string, args []string) error {
 		return err
 	}
 	defer source.Close()
+	return writeNewFile(path, func(dst io.Writer) error { return packClaudeBundle(dst, source, args) })
+}
 
+// writeNewFile publishes a complete file without replacing an existing one.
+func writeNewFile(path string, write func(io.Writer) error) error {
 	file, err := os.CreateTemp(filepath.Dir(path), ".space-review-*.tmp")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(file.Name())
-	writeErr := packClaudeBundle(file, source, args)
+	writeErr := write(file)
 	closeErr := file.Close()
 	if writeErr != nil {
 		return writeErr

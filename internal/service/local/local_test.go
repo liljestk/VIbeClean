@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +50,7 @@ func fakeFiles(t *testing.T, s *Service, drive model.DriveState, readings ...[]m
 		}
 		return model.Snapshot{Scope: model.ScopeKey(req.Scope, []model.DriveState{drive}), Label: req.Scope,
 			Captured: time.Now().UnixMilli() + int64(calls),
-			Coverage: model.Coverage{ScopeKind: model.ScopeFiles, Subfolders: true, Drives: []model.DriveState{drive}},
+			Coverage: model.Coverage{ScopeKind: model.ScopeFiles, Checked: int64(len(records)), Subfolders: true, Drives: []model.DriveState{drive}},
 			Records:  records}, nil
 	}
 }
@@ -65,14 +66,15 @@ func TestCompareResolvesFiltersAndValidates(t *testing.T) {
 		[]model.Record{folder("grow", units.GiB), folder("shrink", 2*units.GiB), folder("small", units.MiB)},
 		[]model.Record{folder("grow", 3*units.GiB), folder("shrink", units.GiB), folder("small", 2*units.MiB)},
 	)
-	var progressed int64
+	wantProgress := []service.Progress{{FilesChecked: 3}, {FilesChecked: 3, Saving: true}}
 	for range 2 {
-		if _, err := s.Capture(ctx, service.CaptureRequest{Scope: `C:\work`}, func(p service.Progress) { progressed = p.FilesChecked }); err != nil {
+		var progress []service.Progress
+		if _, err := s.Capture(ctx, service.CaptureRequest{Scope: `C:\work`}, func(p service.Progress) { progress = append(progress, p) }); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if progressed != 3 {
-		t.Fatalf("progress = %d", progressed)
+		if !slices.Equal(progress, wantProgress) {
+			t.Fatalf("progress = %+v, want %+v", progress, wantProgress)
+		}
 	}
 	all, err := s.Compare(ctx, service.CompareQuery{Scope: `c:\work\`})
 	if err != nil || len(all.Changes) != 3 || all.Baseline.ID == 0 || len(all.Drives) != 1 {

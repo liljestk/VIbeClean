@@ -22,9 +22,17 @@ type Backend interface {
 	Drives(ctx context.Context) ([]model.DriveState, error)
 	// Scopes returns the latest capture of every saved scope, newest first, without records.
 	Scopes(ctx context.Context) ([]model.Snapshot, error)
+	// History lists the saved captures of one scope in reverse capture order, without records.
+	History(ctx context.Context, scope string) ([]model.Snapshot, error)
+	// Inventory returns a page of the detailed entries of a current capture.
+	Inventory(ctx context.Context, query InventoryQuery) (InventoryPage, error)
+	// StreamInventory writes all matching rows in the same order as Inventory.
+	StreamInventory(ctx context.Context, query InventoryQuery, emit func(model.Record) error) error
+	// Duplicates verifies the content of same-size files in a current inventory.
+	Duplicates(ctx context.Context, captureID int64, folder string) (model.DuplicateResult, error)
 	// Latest returns the latest capture of one scope, filtered as requested.
 	Latest(ctx context.Context, query LatestQuery) (Latest, error)
-	// Compare ranks changes between the latest capture of a scope and a baseline.
+	// Compare ranks changes between two captures of a scope.
 	Compare(ctx context.Context, query CompareQuery) (Comparison, error)
 	// Capture measures a scope and saves it. Progress may be nil.
 	Capture(ctx context.Context, request CaptureRequest, progress func(Progress)) (model.Snapshot, error)
@@ -55,6 +63,32 @@ type Latest struct {
 	RefreshRecommended bool
 }
 
+// InventoryQuery filters the detailed file view. With Files false, Parent
+// selects the direct children of a folder (empty means the scan root).
+// With Files true, results include files at any depth.
+type InventoryQuery struct {
+	CaptureID     int64
+	Parent        string
+	Files         bool
+	Query         string
+	Within        string
+	Extension     string
+	MinimumBytes  int64
+	ModifiedSince int64
+	Removal       model.Removal
+	Offset        int
+	Limit         int
+	SortColumn    int
+	Ascending     bool
+}
+
+type InventoryPage struct {
+	Items []model.Record
+	Total int
+}
+
+const InventoryPageSize = 256
+
 // Direction filters changes by sign.
 type Direction int
 
@@ -75,6 +109,9 @@ type CompareQuery struct {
 	Direction    Direction
 	Query        string
 	Limit        int
+	// FromID and ToID select an exact pair. Set both or leave both at zero.
+	FromID int64
+	ToID   int64
 }
 
 // MaxDays is the longest comparison window. History is kept for 120 days.
@@ -92,9 +129,15 @@ type CaptureRequest struct {
 	Scope string
 	// Kind optionally sets the category of a folder scope.
 	Kind string
+	// Exclusions are absolute paths skipped during this capture.
+	Exclusions []string
+	// Detail saves a paged inventory for the latest capture of the scope.
+	Detail bool
 }
 
 // Progress reports how far a capture has come.
 type Progress struct {
 	FilesChecked int64
+	// Saving is true once measurement is complete and the snapshot is being saved.
+	Saving bool
 }

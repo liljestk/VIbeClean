@@ -43,10 +43,11 @@ const (
 	modeMCP
 	modeServe
 	modeVersion
+	modeScheduled
 )
 
 func (m mode) String() string {
-	return [...]string{"desktop", "mcp", "serve", "version"}[m]
+	return [...]string{"desktop", "mcp", "serve", "version", "scheduled"}[m]
 }
 
 // options are the parsed command line.
@@ -58,6 +59,7 @@ type options struct {
 	listen    string
 	tokenFile string
 	logLevel  string
+	scheduled string
 }
 
 func parse(args []string, output io.Writer) (options, error) {
@@ -72,6 +74,7 @@ func parse(args []string, output io.Writer) (options, error) {
 	flags.StringVar(&opts.listen, "listen", DefaultListen, "loopback address for --serve")
 	flags.StringVar(&opts.tokenFile, "token-file", "", "API token file; defaults to api-token beside the index")
 	flags.StringVar(&opts.logLevel, "log-level", "info", "local diagnostics level: info, debug, or off")
+	flags.StringVar(&opts.scheduled, "scheduled", "", "run a configured Windows capture job")
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -79,6 +82,11 @@ func parse(args []string, output io.Writer) (options, error) {
 		return options{}, fmt.Errorf("unexpected argument %q", flags.Arg(0))
 	}
 	switch {
+	case opts.scheduled != "":
+		if *showVersion || *serveMCP || *serveAPI || opts.connect != "" || opts.index == "" {
+			return options{}, errors.New("a scheduled job uses its local --index")
+		}
+		opts.mode = modeScheduled
 	case *showVersion:
 		opts.mode = modeVersion
 	case *serveMCP && *serveAPI:
@@ -216,6 +224,8 @@ func run(opts options) (err error) {
 		return serveMCP(ctx, opts)
 	case modeServe:
 		return serveAPI(ctx, opts)
+	case modeScheduled:
+		return runScheduled(ctx, opts)
 	}
 	executable, err := os.Executable()
 	if err != nil {

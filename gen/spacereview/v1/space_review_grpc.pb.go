@@ -22,6 +22,10 @@ const (
 	SpaceReviewService_GetServerInfo_FullMethodName   = "/spacereview.v1.SpaceReviewService/GetServerInfo"
 	SpaceReviewService_ListDrives_FullMethodName      = "/spacereview.v1.SpaceReviewService/ListDrives"
 	SpaceReviewService_ListScopes_FullMethodName      = "/spacereview.v1.SpaceReviewService/ListScopes"
+	SpaceReviewService_ListHistory_FullMethodName     = "/spacereview.v1.SpaceReviewService/ListHistory"
+	SpaceReviewService_GetInventory_FullMethodName    = "/spacereview.v1.SpaceReviewService/GetInventory"
+	SpaceReviewService_StreamInventory_FullMethodName = "/spacereview.v1.SpaceReviewService/StreamInventory"
+	SpaceReviewService_FindDuplicates_FullMethodName  = "/spacereview.v1.SpaceReviewService/FindDuplicates"
 	SpaceReviewService_GetLatest_FullMethodName       = "/spacereview.v1.SpaceReviewService/GetLatest"
 	SpaceReviewService_CompareCaptures_FullMethodName = "/spacereview.v1.SpaceReviewService/CompareCaptures"
 	SpaceReviewService_Capture_FullMethodName         = "/spacereview.v1.SpaceReviewService/Capture"
@@ -44,9 +48,17 @@ type SpaceReviewServiceClient interface {
 	ListDrives(ctx context.Context, in *ListDrivesRequest, opts ...grpc.CallOption) (*ListDrivesResponse, error)
 	// ListScopes returns the latest capture of every saved scope, without records.
 	ListScopes(ctx context.Context, in *ListScopesRequest, opts ...grpc.CallOption) (*ListScopesResponse, error)
+	// ListHistory returns the saved captures of a scope, without records.
+	ListHistory(ctx context.Context, in *ListHistoryRequest, opts ...grpc.CallOption) (*ListHistoryResponse, error)
+	// GetInventory pages through the detailed entries of a current capture.
+	GetInventory(ctx context.Context, in *GetInventoryRequest, opts ...grpc.CallOption) (*GetInventoryResponse, error)
+	// StreamInventory returns all matching entries in table order.
+	StreamInventory(ctx context.Context, in *StreamInventoryRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamInventoryResponse], error)
+	// FindDuplicates verifies the contents of files in a current inventory.
+	FindDuplicates(ctx context.Context, in *FindDuplicatesRequest, opts ...grpc.CallOption) (*FindDuplicatesResponse, error)
 	// GetLatest returns the latest capture of one scope with its records.
 	GetLatest(ctx context.Context, in *GetLatestRequest, opts ...grpc.CallOption) (*GetLatestResponse, error)
-	// CompareCaptures ranks changes between the latest capture and a baseline.
+	// CompareCaptures ranks changes between two saved captures.
 	CompareCaptures(ctx context.Context, in *CompareCapturesRequest, opts ...grpc.CallOption) (*CompareCapturesResponse, error)
 	// Capture measures a scope and saves it. The stream reports progress and
 	// ends with the saved snapshot. Cancelling the call cancels the capture.
@@ -91,6 +103,55 @@ func (c *spaceReviewServiceClient) ListScopes(ctx context.Context, in *ListScope
 	return out, nil
 }
 
+func (c *spaceReviewServiceClient) ListHistory(ctx context.Context, in *ListHistoryRequest, opts ...grpc.CallOption) (*ListHistoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListHistoryResponse)
+	err := c.cc.Invoke(ctx, SpaceReviewService_ListHistory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *spaceReviewServiceClient) GetInventory(ctx context.Context, in *GetInventoryRequest, opts ...grpc.CallOption) (*GetInventoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetInventoryResponse)
+	err := c.cc.Invoke(ctx, SpaceReviewService_GetInventory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *spaceReviewServiceClient) StreamInventory(ctx context.Context, in *StreamInventoryRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamInventoryResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &SpaceReviewService_ServiceDesc.Streams[0], SpaceReviewService_StreamInventory_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[StreamInventoryRequest, StreamInventoryResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SpaceReviewService_StreamInventoryClient = grpc.ServerStreamingClient[StreamInventoryResponse]
+
+func (c *spaceReviewServiceClient) FindDuplicates(ctx context.Context, in *FindDuplicatesRequest, opts ...grpc.CallOption) (*FindDuplicatesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FindDuplicatesResponse)
+	err := c.cc.Invoke(ctx, SpaceReviewService_FindDuplicates_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *spaceReviewServiceClient) GetLatest(ctx context.Context, in *GetLatestRequest, opts ...grpc.CallOption) (*GetLatestResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetLatestResponse)
@@ -113,7 +174,7 @@ func (c *spaceReviewServiceClient) CompareCaptures(ctx context.Context, in *Comp
 
 func (c *spaceReviewServiceClient) Capture(ctx context.Context, in *CaptureRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[CaptureResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &SpaceReviewService_ServiceDesc.Streams[0], SpaceReviewService_Capture_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &SpaceReviewService_ServiceDesc.Streams[1], SpaceReviewService_Capture_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -147,9 +208,17 @@ type SpaceReviewServiceServer interface {
 	ListDrives(context.Context, *ListDrivesRequest) (*ListDrivesResponse, error)
 	// ListScopes returns the latest capture of every saved scope, without records.
 	ListScopes(context.Context, *ListScopesRequest) (*ListScopesResponse, error)
+	// ListHistory returns the saved captures of a scope, without records.
+	ListHistory(context.Context, *ListHistoryRequest) (*ListHistoryResponse, error)
+	// GetInventory pages through the detailed entries of a current capture.
+	GetInventory(context.Context, *GetInventoryRequest) (*GetInventoryResponse, error)
+	// StreamInventory returns all matching entries in table order.
+	StreamInventory(*StreamInventoryRequest, grpc.ServerStreamingServer[StreamInventoryResponse]) error
+	// FindDuplicates verifies the contents of files in a current inventory.
+	FindDuplicates(context.Context, *FindDuplicatesRequest) (*FindDuplicatesResponse, error)
 	// GetLatest returns the latest capture of one scope with its records.
 	GetLatest(context.Context, *GetLatestRequest) (*GetLatestResponse, error)
-	// CompareCaptures ranks changes between the latest capture and a baseline.
+	// CompareCaptures ranks changes between two saved captures.
 	CompareCaptures(context.Context, *CompareCapturesRequest) (*CompareCapturesResponse, error)
 	// Capture measures a scope and saves it. The stream reports progress and
 	// ends with the saved snapshot. Cancelling the call cancels the capture.
@@ -172,6 +241,18 @@ func (UnimplementedSpaceReviewServiceServer) ListDrives(context.Context, *ListDr
 }
 func (UnimplementedSpaceReviewServiceServer) ListScopes(context.Context, *ListScopesRequest) (*ListScopesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListScopes not implemented")
+}
+func (UnimplementedSpaceReviewServiceServer) ListHistory(context.Context, *ListHistoryRequest) (*ListHistoryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListHistory not implemented")
+}
+func (UnimplementedSpaceReviewServiceServer) GetInventory(context.Context, *GetInventoryRequest) (*GetInventoryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetInventory not implemented")
+}
+func (UnimplementedSpaceReviewServiceServer) StreamInventory(*StreamInventoryRequest, grpc.ServerStreamingServer[StreamInventoryResponse]) error {
+	return status.Error(codes.Unimplemented, "method StreamInventory not implemented")
+}
+func (UnimplementedSpaceReviewServiceServer) FindDuplicates(context.Context, *FindDuplicatesRequest) (*FindDuplicatesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FindDuplicates not implemented")
 }
 func (UnimplementedSpaceReviewServiceServer) GetLatest(context.Context, *GetLatestRequest) (*GetLatestResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLatest not implemented")
@@ -257,6 +338,71 @@ func _SpaceReviewService_ListScopes_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SpaceReviewService_ListHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListHistoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SpaceReviewServiceServer).ListHistory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SpaceReviewService_ListHistory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SpaceReviewServiceServer).ListHistory(ctx, req.(*ListHistoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SpaceReviewService_GetInventory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetInventoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SpaceReviewServiceServer).GetInventory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SpaceReviewService_GetInventory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SpaceReviewServiceServer).GetInventory(ctx, req.(*GetInventoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SpaceReviewService_StreamInventory_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(StreamInventoryRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(SpaceReviewServiceServer).StreamInventory(m, &grpc.GenericServerStream[StreamInventoryRequest, StreamInventoryResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SpaceReviewService_StreamInventoryServer = grpc.ServerStreamingServer[StreamInventoryResponse]
+
+func _SpaceReviewService_FindDuplicates_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FindDuplicatesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SpaceReviewServiceServer).FindDuplicates(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SpaceReviewService_FindDuplicates_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SpaceReviewServiceServer).FindDuplicates(ctx, req.(*FindDuplicatesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SpaceReviewService_GetLatest_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetLatestRequest)
 	if err := dec(in); err != nil {
@@ -324,6 +470,18 @@ var SpaceReviewService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _SpaceReviewService_ListScopes_Handler,
 		},
 		{
+			MethodName: "ListHistory",
+			Handler:    _SpaceReviewService_ListHistory_Handler,
+		},
+		{
+			MethodName: "GetInventory",
+			Handler:    _SpaceReviewService_GetInventory_Handler,
+		},
+		{
+			MethodName: "FindDuplicates",
+			Handler:    _SpaceReviewService_FindDuplicates_Handler,
+		},
+		{
 			MethodName: "GetLatest",
 			Handler:    _SpaceReviewService_GetLatest_Handler,
 		},
@@ -333,6 +491,11 @@ var SpaceReviewService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "StreamInventory",
+			Handler:       _SpaceReviewService_StreamInventory_Handler,
+			ServerStreams: true,
+		},
 		{
 			StreamName:    "Capture",
 			Handler:       _SpaceReviewService_Capture_Handler,

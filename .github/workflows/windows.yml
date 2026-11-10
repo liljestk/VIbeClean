@@ -1,0 +1,33 @@
+name: Windows
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
+      - name: Build portable executable
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'Space Review.exe'
+          go build -trimpath -ldflags '-H=windowsgui' -o $exe ./cmd/spacereview
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "SPACE_REVIEW_EXE=$exe" >> $env:GITHUB_ENV
+      - name: Test with the built executable
+        run: go test -count=1 ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Lint the API schema
+        run: go tool '-modfile=tools/go.mod' buf lint

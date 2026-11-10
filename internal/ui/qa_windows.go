@@ -9,11 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"gioui.org/app"
 	"gioui.org/io/key"
 	"gioui.org/layout"
 	"gioui.org/op"
 
 	"github.com/liljestk/VIbeClean/internal/model"
+	"github.com/liljestk/VIbeClean/internal/service"
 )
 
 // QA builds read SPACE_REVIEW_QA, for example
@@ -41,10 +43,21 @@ func init() {
 		once("theme", true, func() {
 			u.themeFixed = true
 			u.th.palette = darkPalette
-			if settings["theme"] == "light" {
+			switch settings["theme"] {
+			case "light":
 				u.th.palette = lightPalette
+			case "contrast":
+				u.th.palette = contrastPalette()
 			}
 			tintFrame(u.hwnd, u.th.palette)
+		})
+		once("window", true, func() {
+			switch settings["window"] {
+			case "narrow":
+				u.win.Option(app.Size(640, 540))
+			case "min":
+				u.win.Option(app.Size(560, 460))
+			}
 		})
 		loaded := u.backend != nil && !u.opening
 		once("view", loaded, func() {
@@ -53,6 +66,11 @@ func init() {
 					u.setView(i)
 				}
 			}
+		})
+		once("scope", loaded && u.view == viewFiles && u.active == nil, func() {
+			scope := settings["scope"]
+			u.setFileScope(scope)
+			u.loadFileScope(scope, scope)
 		})
 		pane := u.activePane()
 		ready := loaded && done["view"] == (settings["view"] != "") && pane != nil && len(pane.rows) > 0
@@ -80,6 +98,12 @@ func init() {
 			}
 		})
 		once("focus", ready, func() { gtx.Execute(key.FocusCmd{Tag: pane}) })
+		once("map", ready && u.canShowMap(), func() {
+			if u.wideResults || settings["filters"] == "" {
+				u.toggleDetails(true)
+			}
+		})
+		once("filters", ready && u.view == viewFiles, u.openFileFilters)
 		once("dropdown", ready, func() {
 			switch settings["dropdown"] {
 			case "direction":
@@ -89,7 +113,12 @@ func init() {
 			case "mode":
 				u.changeMode.open, u.fileMode.open, u.dockerMode.open = u.view == viewChanges, u.view == viewFiles, u.view == viewDocker
 			case "removal":
-				u.fileRemoval.open = u.view == viewFiles
+				if u.view == viewFiles {
+					u.openFileFilters()
+					u.fileFilters.removal.open = true
+				}
+			case "more":
+				u.more.open = true
 			}
 		})
 		once("inspect", ready, func() {
@@ -101,10 +130,15 @@ func init() {
 		})
 		once("busy", loaded, func() {
 			ctx, cancel := context.WithCancel(u.ctx)
-			u.active = &captureTask{scope: model.QuickScope, ctx: ctx, cancel: cancel, started: time.Now(), checked: 1284311}
+			u.active = &captureTask{scope: model.QuickScope, ctx: ctx, cancel: cancel, started: time.Now(),
+				progress: service.Progress{FilesChecked: 1284311, Saving: settings["busy"] == "saving"}}
 			u.setActivity("Scanning Quick review…", toneBusy)
 		})
 		once("assistant", ready || (loaded && u.view == viewMCP), func() { u.askAssistant() })
+		once("export", ready, func() { u.openExport() })
+		once("schedule", ready, func() { u.openSchedule() })
+		once("duplicates", ready && u.files.Coverage.Inventory, func() { u.openDuplicates() })
+		once("coverage", ready && u.view == viewFiles, func() { u.showScanCoverage() })
 		once("alert", loaded, func() { u.showAlert("Folder unavailable", `C:\Example\Video exports is no longer available.`) })
 		if len(done) < len(settings) {
 			gtx.Execute(op.InvalidateCmd{At: gtx.Now.Add(100 * time.Millisecond)})

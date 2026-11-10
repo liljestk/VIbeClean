@@ -6,7 +6,6 @@ package ui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"image"
 	"log/slog"
 	"sync"
@@ -14,8 +13,10 @@ import (
 
 	"gioui.org/app"
 	"gioui.org/io/key"
+	"gioui.org/io/semantic"
 	"gioui.org/layout"
 	"gioui.org/op"
+	"gioui.org/op/clip"
 	"gioui.org/op/paint"
 	"gioui.org/unit"
 	"gioui.org/widget"
@@ -38,7 +39,7 @@ var (
 	viewIcons        = [viewCount]icon{iconActivity, iconFolder, iconBoxes, iconPlug}
 	viewDescriptions = [viewCount]string{
 		"Compare two saved storage captures.",
-		"Find the folders and files using the most space.",
+		"See what uses disk space.",
 		"Review storage used by the Docker engine.",
 		"Use the same saved history in an assistant.",
 	}
@@ -73,7 +74,7 @@ type captureTask struct {
 	started  time.Time
 	cancel   context.CancelFunc
 	stopping bool
-	checked  int64
+	progress service.Progress
 }
 
 type guiRead struct{ cancel context.CancelFunc }
@@ -108,17 +109,21 @@ type ui struct {
 	opening bool
 	opened  <-chan service.Backend
 
-	view            int
-	nav             [viewCount]widget.Clickable
-	inspectorHidden bool
-	captureButton   widget.Clickable
-	inspectorButton widget.Clickable
-	assistantButton widget.Clickable
-	cancelButton    widget.Clickable
-	reloadButton    widget.Clickable
-	diagButton      widget.Clickable
-	sidebarList     widget.List
-	mcpList         widget.List
+	view             int
+	nav              [viewCount]widget.Clickable
+	wideResults      bool
+	inspectorHidden  bool
+	inspectorButton  widget.Clickable
+	details          *detailsDialog
+	returnFocus      *widget.Clickable
+	summaryButton    widget.Clickable
+	captureButton    widget.Clickable
+	captureWasCancel bool
+	more             selectBox
+	reloadButton     widget.Clickable
+	diagButton       widget.Clickable
+	sidebarList      widget.List
+	mcpList          widget.List
 
 	drives     []model.DriveState
 	driveRoots []string
@@ -127,9 +132,16 @@ type ui struct {
 	active     *captureTask
 	dueLoad    *guiRead
 
-	assistant *assistantDialog
-	alert     *alertDialog
-	clipboard *string
+	assistant    *assistantDialog
+	export       *exportDialog
+	exporting    bool
+	exclusions   *exclusionsDialog
+	scheduled    *scheduleDialog
+	duplicates   *duplicatesDialog
+	recycle      *recycleDialog
+	coverageInfo *coverageDialog
+	alert        *alertDialog
+	clipboard    *string
 	// themeFixed stops following the system theme, for QA builds.
 	themeFixed bool
 
@@ -222,13 +234,24 @@ func Run(parent context.Context, opts Options) error {
 		u.watchTheme()
 	}()
 	var ops op.Ops
+	var accessibility *accessWindow
 	first := true
+	focused := false
 	for {
 		switch e := u.win.Event().(type) {
+		case app.ConfigEvent:
+			if e.Config.Focused && !focused {
+				u.checkFilePaths()
+			}
+			focused = e.Config.Focused
 		case app.Win32ViewEvent:
 			if e.Valid() {
 				u.hwnd = e.HWND
 				tintFrame(u.hwnd, u.th.palette)
+				u.win.Run(func() { accessibility = attachAccessibility(u, e.HWND) })
+				if accessibility != nil {
+					u.th.access = &accessibility.frame
+				}
 			}
 		case app.DestroyEvent:
 			diag.Log(ctx, slog.LevelInfo, "gui.close", slog.Bool("capture_active", u.active != nil))
@@ -240,7 +263,14 @@ func Run(parent context.Context, opts Options) error {
 		case app.FrameEvent:
 			u.drain()
 			gtx := app.NewContext(&ops, e)
+			if accessibility != nil {
+				accessibility.frame.begin(gtx)
+			}
 			u.layout(gtx)
+			if accessibility != nil {
+				changed, focus := accessibility.frame.snapshot(gtx.Ops, e.Size)
+				accessibility.notify(changed, focus)
+			}
 			e.Frame(gtx.Ops)
 			if first {
 				first = false
@@ -389,7 +419,7 @@ func (u *ui) scheduleCaptures() {
 // a day, after checking that no other process captured it meanwhile.
 func (u *ui) captureDue(now time.Time) {
 	backend := u.backend
-	if backend == nil || u.ctx.Err() != nil || u.active != nil || u.dueLoad != nil {
+	if backend == nil || u.ctx.Err() != nil || u.active != nil || u.dueLoad != nil || u.recycle != nil {
 		return
 	}
 	dockerDue := u.view == viewDocker && dailyCaptureDue(u.docker, now)
@@ -410,7 +440,7 @@ func (u *ui) captureDue(now time.Time) {
 		}
 		return saved, errors.Join(dockerErr, filesErr)
 	}, func(saved scheduled, _ error) {
-		if u.active != nil {
+		if u.active != nil || u.recycle != nil {
 			return
 		}
 		if dockerDue && u.view == viewDocker && u.docker.Scope == dockerID &&
@@ -446,11 +476,20 @@ func (u *ui) setView(index int) {
 		return
 	}
 	u.view = index
+	u.more.open = false
+	u.more.Changed()
+	u.details = nil
+	u.returnFocus = nil
 	u.viewChanged()
 }
 
 func (u *ui) viewChanged() {
+	if u.view != viewFiles {
+		cancelGUIRead(&u.fileCheck)
+	}
 	switch u.view {
+	case viewFiles:
+		u.checkFilePaths()
 	case viewDocker:
 		if u.backend != nil && !u.dockerOpened && u.active == nil {
 			u.dockerOpened = true
@@ -487,6 +526,16 @@ func (u *ui) cancelActive() {
 	diag.Log(u.active.ctx, slog.LevelInfo, "gui.cancel_requested")
 	u.active.cancel()
 	u.setActivity("Canceling "+u.active.scope+"…", toneBusy)
+}
+
+func (u *ui) captureProgress(task *captureTask) func(service.Progress) {
+	return func(progress service.Progress) {
+		u.post(func() {
+			if u.active == task && task.ctx.Err() == nil {
+				task.progress = progress
+			}
+		})
+	}
 }
 
 func (u *ui) applyCapture(task *captureTask, err error, apply func()) {
@@ -599,7 +648,7 @@ func (u *ui) globalKeys(gtx layout.Context) {
 		if !ok || k.State != key.Press {
 			continue
 		}
-		modal := u.assistant != nil || u.alert != nil
+		modal := u.dialogActive()
 		switch k.Name {
 		case "F5":
 			if !modal {
@@ -612,14 +661,36 @@ func (u *ui) globalKeys(gtx layout.Context) {
 			}
 		case "I":
 			if !modal && u.activePane() != nil {
-				u.inspectorHidden = !u.inspectorHidden
+				u.toggleDetails(false)
+			} else if u.details != nil && u.details.summary == nil && !u.details.showMap && u.alert == nil {
+				u.closeDetails(gtx)
 			}
 		case key.NameEscape:
 			switch {
 			case u.alert != nil:
 				u.alert = nil
+			case u.recycle != nil:
+				u.closeRecycle()
+			case u.export != nil:
+				u.export = nil
+			case u.exclusions != nil:
+				u.exclusions = nil
+			case u.scheduled != nil:
+				u.closeSchedule()
+			case u.duplicates != nil:
+				u.closeDuplicates()
+			case u.coverageInfo != nil:
+				u.coverageInfo = nil
+			case u.fileFilters != nil:
+				if !u.fileFilters.closePicker() {
+					u.closeFileFilters(gtx)
+				}
+			case u.details != nil:
+				u.closeDetails(gtx)
 			case u.assistant != nil:
 				u.assistant = nil
+			case u.more.open:
+				u.more.open = false
 			}
 		}
 	}
@@ -629,7 +700,16 @@ func (u *ui) globalKeys(gtx layout.Context) {
 // state for layout checks.
 var qaFrame func(*ui, layout.Context)
 
+func (u *ui) dialogActive() bool {
+	return u.assistant != nil || u.export != nil || u.exclusions != nil || u.scheduled != nil || u.duplicates != nil ||
+		u.coverageInfo != nil || u.fileFilters != nil || u.details != nil || u.recycle != nil || u.alert != nil
+}
+
 func (u *ui) layout(gtx layout.Context) {
+	width := gtx.Metric.PxToDp(gtx.Constraints.Max.X)
+	compact := width < 960
+	workspace := width - sidebarWidth(compact)
+	u.wideResults = workspace-2*workspaceInset(workspace) >= 680
 	if qaFrame != nil {
 		qaFrame(u, gtx)
 	}
@@ -637,23 +717,56 @@ func (u *ui) layout(gtx layout.Context) {
 	u.globalKeys(gtx)
 	t := u.th
 	paint.Fill(gtx.Ops, t.surface)
-	widthDp := gtx.Metric.PxToDp(gtx.Constraints.Max.X)
-	compact := widthDp < 900
 	ugtx := gtx
-	if u.assistant != nil || u.alert != nil {
+	modal := u.dialogActive()
+	if !modal && u.returnFocus != nil {
+		gtx.Execute(key.FocusCmd{Tag: u.returnFocus})
+		u.returnFocus = nil
+	}
+	var underlay clip.Stack
+	if modal {
 		ugtx = gtx.Disabled()
+		underlay = clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
+		semantic.DescriptionOp(accessHidden).Add(gtx.Ops)
 	}
 	layout.Flex{}.Layout(ugtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions { return u.sidebar(gtx, compact) }),
 		layout.Flexed(1, u.workspace),
 	)
+	if modal {
+		underlay.Pop()
+	}
 	if u.assistant != nil {
 		u.assistant.layout(gtx, u)
+	}
+	if u.export != nil {
+		u.export.layout(gtx, u)
+	}
+	if u.exclusions != nil {
+		u.exclusions.layout(gtx, u)
+	}
+	if u.scheduled != nil {
+		u.scheduled.layout(gtx, u)
+	}
+	if u.duplicates != nil {
+		u.duplicates.layout(gtx, u)
+	}
+	if u.fileFilters != nil {
+		u.fileFilters.layout(gtx, u)
+	}
+	if u.details != nil {
+		u.details.layout(gtx, u)
+	}
+	if u.coverageInfo != nil {
+		u.coverageInfo.layout(gtx, u)
+	}
+	if u.recycle != nil {
+		u.recycle.layout(gtx, u)
 	}
 	if u.alert != nil {
 		u.alert.layout(gtx, u)
 	}
-	if u.active != nil {
+	if u.active != nil || (u.duplicates != nil && u.duplicates.request != nil) {
 		// Animate the progress strip while a capture runs.
 		gtx.Execute(op.InvalidateCmd{At: gtx.Now.Add(40 * time.Millisecond)})
 	}
@@ -661,10 +774,7 @@ func (u *ui) layout(gtx layout.Context) {
 
 func (u *ui) sidebar(gtx layout.Context, compact bool) layout.Dimensions {
 	t := u.th
-	width := gtx.Dp(220)
-	if compact {
-		width = gtx.Dp(64)
-	}
+	width := gtx.Dp(sidebarWidth(compact))
 	size := image.Pt(width, gtx.Constraints.Max.Y)
 	gtx.Constraints = layout.Exact(size)
 	paint.FillShape(gtx.Ops, t.chrome, clipRect(size))
@@ -739,6 +849,7 @@ func (u *ui) navItem(gtx layout.Context, index int, compact bool) layout.Dimensi
 	selected := u.view == index
 	return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		size := image.Pt(gtx.Constraints.Max.X, gtx.Dp(38))
+		defer t.exposeButton(gtx, size, click, viewNames[index]).Pop()
 		switch {
 		case selected:
 			fill(gtx, t.selected, size, 8)
@@ -787,7 +898,7 @@ func (u *ui) driveList(gtx layout.Context, compact bool) layout.Dimensions {
 		children = append(children,
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return layout.Inset{Left: 4}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return t.label(gtx, t.strong(12, t.quiet), "Local drives")
+					return t.label(gtx, t.strong(12, t.quiet), "Live drive space")
 				})
 			}),
 			layout.Rigid(space(0, 10)))
@@ -849,7 +960,8 @@ func (u *ui) sidebarFooter(gtx layout.Context, compact bool) layout.Dimensions {
 	if compact {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return t.button(gtx, &u.reloadButton, buttonStyle{kind: quiet, icon: iconRefresh, compact: true, disabled: u.opening})
+				return t.button(gtx, &u.reloadButton, buttonStyle{kind: quiet, icon: iconRefresh, compact: true,
+					accessibleName: "Reload history", disabled: u.opening})
 			}),
 		)
 	}
@@ -871,26 +983,35 @@ func (u *ui) sidebarFooter(gtx layout.Context, compact bool) layout.Dimensions {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
+func sidebarWidth(compact bool) unit.Dp {
+	if compact {
+		return 64
+	}
+	return 220
+}
+
+func workspaceInset(width unit.Dp) unit.Dp {
+	if width < 640 {
+		return 14
+	}
+	return 26
+}
+
 // workspace is the main area: heading, the current view and the status strip.
 func (u *ui) workspace(gtx layout.Context) layout.Dimensions {
 	t := u.th
+	if u.view == viewChanges && u.viewFirstScan.Clicked(gtx) && u.canOpenFirstScan() {
+		u.openFirstScan()
+		gtx.Execute(op.InvalidateCmd{})
+	}
 	if u.captureButton.Clicked(gtx) {
-		u.captureCurrent()
+		if !u.captureWasCancel && u.active == nil {
+			u.captureCurrent()
+		} else if u.captureWasCancel && u.active != nil {
+			u.cancelActive()
+		}
 	}
-	if u.inspectorButton.Clicked(gtx) {
-		u.inspectorHidden = !u.inspectorHidden
-	}
-	if u.assistantButton.Clicked(gtx) {
-		u.askAssistant()
-	}
-	if u.cancelButton.Clicked(gtx) {
-		u.cancelActive()
-	}
-	widthDp := gtx.Metric.PxToDp(gtx.Constraints.Max.X)
-	side := unit.Dp(26)
-	if widthDp < 640 {
-		side = 14
-	}
+	side := workspaceInset(gtx.Metric.PxToDp(gtx.Constraints.Max.X))
 	return layout.Inset{Left: side, Right: side, Top: 18}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		gtx.Constraints.Min = gtx.Constraints.Max
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -927,28 +1048,75 @@ func (u *ui) heading(gtx layout.Context) layout.Dimensions {
 		)
 	}
 	if u.view == viewMCP {
+		if u.active != nil {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, title), layout.Rigid(space(16, 0)), layout.Rigid(u.captureControl))
+		}
 		return title(gtx)
 	}
-	actions := func(gtx layout.Context) layout.Dimensions {
-		busy := u.active != nil
-		return flow{gap: 8, rowGap: 8}.Layout(gtx,
-			func(gtx layout.Context) layout.Dimensions {
-				return t.button(gtx, &u.assistantButton, buttonStyle{icon: iconMessage, label: "Ask assistant"})
-			},
-			func(gtx layout.Context) layout.Dimensions {
-				return t.button(gtx, &u.inspectorButton, buttonStyle{icon: iconPanel, label: "Inspector", pressed: !u.inspectorHidden})
-			},
-			func(gtx layout.Context) layout.Dimensions {
-				ic := iconScan
-				if u.view == viewDocker {
-					ic = iconRefresh
-				}
-				return t.button(gtx, &u.captureButton, buttonStyle{kind: primary, icon: ic, label: u.captureText(),
-					disabled: busy || u.backend == nil})
-			},
+	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+		layout.Flexed(1, title),
+		layout.Rigid(space(16, 0)),
+		layout.Rigid(u.moreActions),
+		layout.Rigid(space(8, 0)),
+		layout.Rigid(u.captureControl),
+	)
+}
+
+func (u *ui) moreActions(gtx layout.Context) layout.Dimensions {
+	type action struct {
+		label    string
+		disabled bool
+		run      func()
+	}
+	actions := []action{
+		{"Ask assistant", false, u.askAssistant},
+		{"Export current view…", u.reportSource().ID == 0 || u.exporting, u.openExport},
+		{"Schedule scans…", u.backend == nil || u.opts.MCPCommand == "", u.openSchedule},
+	}
+	if u.view == viewFiles {
+		actions = append(actions,
+			action{"Find duplicates…", !u.files.Coverage.Inventory || u.active != nil, u.openDuplicates},
+			action{"Scan coverage", u.files.ID == 0, u.showScanCoverage},
+			action{"Scan exclusions…", u.backend == nil || u.active != nil, u.openExclusions},
 		)
 	}
-	return split(gtx, 16, title, actions)
+	u.more.command = "More"
+	names := make([]string, len(actions))
+	u.more.unavailable = make([]bool, len(actions))
+	for i, item := range actions {
+		names[i], u.more.unavailable[i] = item.label, item.disabled
+	}
+	u.more.setOptions(names, u.more.index)
+	if u.more.Changed() && u.more.index >= 0 {
+		item := actions[u.more.index]
+		if !item.disabled {
+			item.run()
+			if u.dialogActive() {
+				u.returnFocus = &u.more.button
+			}
+			gtx.Execute(op.InvalidateCmd{})
+		}
+	}
+	u.more.index = -1
+	return u.more.Layout(gtx, u.th)
+}
+
+func (u *ui) captureControl(gtx layout.Context) layout.Dimensions {
+	t := u.th
+	label := u.captureText()
+	ic := iconScan
+	if label == "Refresh Docker" {
+		ic = iconRefresh
+	}
+	style := buttonStyle{kind: primary, icon: ic, label: label, shortcut: "F5", disabled: u.backend == nil}
+	u.captureWasCancel = u.active != nil
+	if u.captureWasCancel {
+		style = buttonStyle{icon: iconClose, label: "Cancel scan", disabled: u.active.stopping}
+	}
+	width := max(t.measure(gtx, t.strong(14, t.ink), label), t.measure(gtx, t.strong(14, t.ink), "Cancel scan"))
+	gtx.Constraints.Min.X = min(gtx.Constraints.Max.X, width+gtx.Dp(49))
+	return t.button(gtx, &u.captureButton, style)
 }
 
 func (u *ui) statusStrip(gtx layout.Context, t *theme) layout.Dimensions {
@@ -961,37 +1129,30 @@ func (u *ui) statusStrip(gtx layout.Context, t *theme) layout.Dimensions {
 			case toneProblem:
 				dot = t.grow
 			}
-			children := []layout.FlexChild{
+			if u.active != nil {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions { return u.progress(gtx, t) }),
+					layout.Rigid(space(8, 0)),
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						return t.label(gtx, t.small(t.ink), u.statusText())
+					}),
+				)
+			}
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					size := image.Pt(gtx.Dp(7), gtx.Dp(7))
 					fill(gtx, dot, size, 4)
 					return layout.Dimensions{Size: size}
 				}),
 				layout.Rigid(space(8, 0)),
-			}
-			if u.active != nil {
-				children = append(children,
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions { return u.progress(gtx, t) }),
-					layout.Rigid(space(10, 0)))
-			}
-			children = append(children, layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-				text := func(gtx layout.Context) layout.Dimensions {
-					return t.label(gtx, t.small(t.quiet), u.statusText())
-				}
-				if u.active == nil {
-					return text(gtx)
-				}
-				return flow{gap: 10, rowGap: 4, middle: true}.Layout(gtx, text, func(gtx layout.Context) layout.Dimensions {
-					return t.button(gtx, &u.cancelButton, buttonStyle{kind: quiet, icon: iconClose, label: "Cancel capture",
-						compact: true, disabled: u.active.stopping})
-				})
-			}))
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx, children...)
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return t.label(gtx, t.small(t.quiet), u.status)
+				}),
+			)
 		}
 		right := func(gtx layout.Context) layout.Dimensions {
 			txt := u.statusDates()
-			// During a capture, progress and Cancel need the room more.
-			if txt == "" || (u.active != nil && gtx.Metric.PxToDp(gtx.Constraints.Max.X) < 860) {
+			if txt == "" {
 				return layout.Dimensions{}
 			}
 			return t.label(gtx, t.small(t.quiet), txt)
@@ -1007,16 +1168,23 @@ func (u *ui) statusStrip(gtx layout.Context, t *theme) layout.Dimensions {
 }
 
 func (u *ui) statusText() string {
-	if u.active != nil && u.active.checked > 0 && !u.active.stopping {
-		return fmt.Sprintf("Scanning %s  ·  %s files checked", u.active.scope, thousands(u.active.checked))
+	if u.active == nil || u.active.stopping {
+		return u.status
 	}
-	return u.status
+	text := u.status
+	if u.active.progress.Saving {
+		text = "Saving scan…"
+	} else if u.active.progress.FilesChecked > 0 {
+		text = "Scanning " + locationName(u.active.scope)
+	}
+	if checked := u.active.progress.FilesChecked; checked > 0 {
+		text = thousands(checked) + " files checked  ·  " + text
+	}
+	return text
 }
 
 func (u *ui) statusDates() string {
 	switch u.view {
-	case viewChanges:
-		return u.changeDates
 	case viewFiles:
 		if u.files.ID != 0 {
 			return "Saved " + timeText(u.files.Captured)
@@ -1031,7 +1199,7 @@ func (u *ui) statusDates() string {
 
 // progress is an indeterminate progress strip.
 func (u *ui) progress(gtx layout.Context, t *theme) layout.Dimensions {
-	w, h := gtx.Dp(96), gtx.Dp(4)
+	w, h := min(gtx.Dp(64), gtx.Constraints.Max.X), gtx.Dp(4)
 	paint.FillShape(gtx.Ops, t.track, clipRRect(image.Pt(w, h), h/2, gtx))
 	phase := float32(gtx.Now.UnixMilli()%1400) / 1400
 	segment := w / 3

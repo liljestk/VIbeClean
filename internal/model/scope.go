@@ -21,6 +21,33 @@ func NormalizedKey(path string) string {
 	return strings.TrimRight(strings.ToLower(filepath.Clean(path)), `\`)
 }
 
+// ScanExclusions validates and normalizes paths so the same coverage can be
+// recognized across captures regardless of path case or the input order.
+func ScanExclusions(scope string, paths []string) ([]string, error) {
+	if len(paths) > 128 {
+		return nil, InvalidArgument("choose up to 128 paths to exclude")
+	}
+	root := NormalizedKey(scope)
+	var result []string
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		path = strings.ToLower(filepath.Clean(path))
+		if VolumeRoot(path) == "" || !filepath.IsAbs(path) || strings.ContainsAny(path[2:], ":*?\x00") {
+			return nil, InvalidArgument("enter an absolute local path for each scan exclusion")
+		}
+		key := NormalizedKey(path)
+		if scope != QuickScope && !strings.HasPrefix(key, root+`\`) {
+			return nil, InvalidArgument("exclude a file or folder inside the scan location")
+		}
+		result = append(result, path)
+	}
+	slices.Sort(result)
+	return slices.Compact(result), nil
+}
+
 // ScopeKey ties a folder's history to the volume that holds it. Quick review
 // spans every fixed drive, so its key leaves drives out: adding or removing a
 // drive keeps its history, and comparisons count only drives that match.

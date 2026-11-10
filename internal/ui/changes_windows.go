@@ -16,8 +16,10 @@ import (
 	"github.com/liljestk/VIbeClean/internal/units"
 )
 
+const pickScans = "Pick two scans"
+
 var (
-	periods     = []string{"Previous scan", "Last day", "Last week", "Last month", "Last 90 days"}
+	periods     = []string{"Previous scan", "Last day", "Last week", "Last month", "Last 90 days", pickScans}
 	periodDays  = []int{0, 1, 7, 30, 90}
 	cutoffs     = []string{"128 MiB", "256 MiB", "512 MiB", "1 GiB", "5 GiB"}
 	cutoffBytes = []int64{128 * units.MiB, model.MinChange, 512 * units.MiB, units.GiB, 5 * units.GiB}
@@ -45,14 +47,21 @@ type changesTab struct {
 	changePane      rankedPane
 	changeScope     selectBox
 	period          selectBox
+	fromScan        selectBox
+	toScan          selectBox
 	changeMode      selectBox
 	minimum         selectBox
 	direction       selectBox
 	changeFilter    searchField
 	changeBack      widget.Clickable
+	viewFirstScan   widget.Clickable
 	scopes          []model.Snapshot
 	comparison      service.Comparison
 	compareLoad     *guiRead
+	historyLoad     *guiRead
+	historyScope    string
+	history         []model.Snapshot
+	historyNotice   string
 	scopeLoad       *guiRead
 	focused         *changeFocus
 	changeStatus    string
@@ -73,12 +82,15 @@ func (u *ui) initViews() {
 	u.changePane.onInspect = u.inspectChange
 	u.changeScope.setOptions([]string{model.QuickScope}, 0)
 	u.changeScope.name = "Location to compare"
+	u.changeScope.displayValue, u.changeScope.maxWidth, u.changeScope.popupWidth = locationName, 216, 400
 	u.period.setOptions(periods, 0)
+	u.period.name = "Comparison period"
+	u.fromScan.name, u.toScan.name = "Earlier scan", "Later scan"
 	u.changeMode.setOptions(model.SupportedSeries(model.ScopeFiles, true), 0)
 	u.minimum.setOptions(cutoffs, 1)
 	u.minimum.prefix = "≥ "
 	u.direction.setOptions(directions, 0)
-	u.changeFilter.prompt = "Search changes"
+	u.changeFilter.prompt, u.changeFilter.shortcut = "Search changes", findShortcut
 	u.changeStatus = "Run a scan to create a baseline."
 	u.initFiles()
 	u.initDocker()
@@ -103,6 +115,29 @@ func (u *ui) captureChanges() {
 	} else {
 		u.startFiles(selection.Label, selection.Coverage.Kind, false)
 	}
+}
+
+func (u *ui) canOpenFirstScan() bool {
+	saved := u.comparison.Latest
+	return u.backend != nil && saved.ID != 0 && u.comparison.Baseline.ID == 0 &&
+		saved.Coverage.ScopeKind == model.ScopeFiles && saved.Scope == u.changeSelection().Scope &&
+		(!u.fileCaptureActive() || strings.EqualFold(saved.Label, u.active.scope))
+}
+
+func (u *ui) openFirstScan() {
+	saved := u.comparison.Latest
+	u.setFileScope(saved.Label)
+	u.fileMode.setOptions(u.fileMode.options, 0)
+	u.fileRemoval.setOptions(u.fileRemoval.options, 0)
+	u.fileFilter.setText("")
+	if u.files.ID == saved.ID && u.files.Scope == saved.Scope {
+		cancelGUIRead(&u.fileLoad)
+		u.restoreFileBrowse(fileBrowseState{sort: 1})
+		u.renderFiles()
+	} else {
+		u.loadFileScope(saved.Label, saved.Scope)
+	}
+	u.setView(viewFiles)
 }
 
 func (u *ui) applyScopes(list []model.Snapshot) {
@@ -146,7 +181,80 @@ func (u *ui) chooseChangeScope() {
 		selected := slices.Index(options, u.changeMode.value())
 		u.changeMode.setOptions(options, max(0, selected))
 	}
+	u.refreshComparison()
+}
+
+func (u *ui) refreshComparison() {
+	if u.period.value() == pickScans {
+		u.loadChangeHistory()
+		return
+	}
+	cancelGUIRead(&u.historyLoad)
+	u.historyNotice = ""
 	u.loadComparison()
+}
+
+func (u *ui) scanPair() (from, to int64) {
+	later := u.toScan.index
+	earlier := later + 1 + u.fromScan.index
+	if later >= 0 && earlier > later && earlier < len(u.history) {
+		return u.history[earlier].ID, u.history[later].ID
+	}
+	return 0, 0
+}
+
+func scanChoices(history []model.Snapshot, chosen int64) ([]string, int) {
+	names := make([]string, 0, len(history))
+	index := 0
+	for i, scan := range history {
+		stamp := time.UnixMilli(scan.Captured).Format("2 Jan 2006 15:04:05")
+		names = append(names, fmt.Sprintf("%s · #%d", stamp, scan.ID))
+		if scan.ID == chosen {
+			index = i
+		}
+	}
+	return names, index
+}
+
+func (u *ui) loadChangeHistory() {
+	backend, scope := u.backend, u.changeSelection().Scope
+	cancelGUIRead(&u.compareLoad)
+	if u.historyScope != scope {
+		u.history = nil
+		u.historyScope = scope
+		u.fromScan.setOptions(nil, 0)
+		u.toScan.setOptions(nil, 0)
+		u.comparison = service.Comparison{}
+		u.renderChanges()
+	}
+	if backend == nil || scope == "" {
+		u.historyNotice = "Save two scans of this location to choose a pair."
+		u.loadComparison()
+		return
+	}
+	from, to := u.scanPair()
+	u.historyNotice = "Loading saved scans…"
+	readForGUI(u, &u.historyLoad, "gui.compare_history", func(ctx context.Context) ([]model.Snapshot, error) {
+		return backend.History(ctx, scope)
+	}, func(history []model.Snapshot, err error) {
+		u.history = history
+		switch {
+		case err != nil:
+			u.historyNotice = "Could not list saved scans. " + err.Error()
+		case len(history) < 2:
+			u.historyNotice = "Save two scans of this location to choose a pair."
+		default:
+			u.historyNotice = ""
+		}
+		u.toScan.setOptions(scanChoices(history[:max(0, len(history)-1)], to))
+		u.chooseEarlierScan(from)
+		u.loadComparison()
+	})
+}
+
+func (u *ui) chooseEarlierScan(from int64) {
+	start := min(len(u.history), u.toScan.index+1)
+	u.fromScan.setOptions(scanChoices(u.history[start:], from))
 }
 
 func (u *ui) loadComparison() {
@@ -154,7 +262,13 @@ func (u *ui) loadComparison() {
 	if window < 0 {
 		return
 	}
-	scope, days := u.changeSelection().Scope, periodDays[window]
+	scope := u.changeSelection().Scope
+	query := service.CompareQuery{Scope: scope}
+	if u.period.value() == pickScans {
+		query.FromID, query.ToID = u.scanPair()
+	} else {
+		query.Days = periodDays[window]
+	}
 	backend := u.backend
 	if scope == "" || backend == nil {
 		cancelGUIRead(&u.compareLoad)
@@ -169,11 +283,14 @@ func (u *ui) loadComparison() {
 	}
 	u.changeStatus = "Comparing saved captures…"
 	readForGUI(u, &u.compareLoad, "gui.compare", func(ctx context.Context) (service.Comparison, error) {
-		return backend.Compare(ctx, service.CompareQuery{Scope: scope, Days: days})
+		return backend.Compare(ctx, query)
 	}, func(data service.Comparison, err error) {
 		if err != nil {
+			if query.FromID != 0 {
+				u.comparison = service.Comparison{}
+			}
 			u.renderChanges()
-			if !errors.Is(err, model.ErrNotFound) {
+			if query.FromID != 0 || !errors.Is(err, model.ErrNotFound) {
 				u.changeStatus = "Could not load this comparison. " + err.Error()
 			}
 			return
@@ -195,7 +312,8 @@ func (u *ui) renderChanges() {
 	defer func() { logRender(u.ctx, "changes", started, len(u.comparison.Changes), len(u.changePane.rows)) }()
 	diff := u.comparison
 	ready := diff.Baseline.ID != 0
-	for _, box := range []*selectBox{&u.period, &u.changeMode, &u.minimum, &u.direction} {
+	u.period.disabled = diff.Latest.ID == 0 && u.changeSelection().ID == 0 && u.period.value() != pickScans
+	for _, box := range []*selectBox{&u.changeMode, &u.minimum, &u.direction} {
 		box.disabled = !ready
 	}
 	u.changePane.inspectReady = diff.Baseline.Coverage.Subfolders && diff.Latest.Coverage.Subfolders
@@ -228,8 +346,8 @@ func (u *ui) renderChanges() {
 		u.changeDates = timeText(diff.Baseline.Captured) + " → " + timeText(diff.Latest.Captured)
 		return
 	}
-	if mode == model.Labeled && diff.Baseline.Coverage.Labels != diff.Latest.Coverage.Labels {
-		u.changePane.show(nil, "", "Choose two captures made with the same labels. New scans label apps, games and projects automatically.")
+	if (mode == model.Candidates || mode == model.Labeled) && diff.Baseline.Coverage.Labels != diff.Latest.Coverage.Labels {
+		u.changePane.show(nil, "", "Choose two captures made with the same labeling rules.")
 		u.changeDates = timeText(diff.Baseline.Captured) + " → " + timeText(diff.Latest.Captured)
 		return
 	}
@@ -279,9 +397,9 @@ func changeMetrics(diff service.Comparison) []metric {
 		usedText, freeText = units.Delta(used, false), units.Size(free)
 	}
 	return []metric{
-		{label: "Actual drive change", value: usedText, caption: caption(usedParts)},
-		{label: "Comparable folders", value: units.Delta(folders, false), caption: caption(folderParts)},
-		{label: "Drive space free", value: freeText, caption: caption(freeParts)},
+		{label: "Drive usage change", value: usedText, caption: caption(usedParts)},
+		{label: "Tracked folder change", value: units.Delta(folders, false), caption: caption(folderParts)},
+		{label: "Free at later scan", value: freeText, caption: caption(freeParts)},
 	}
 }
 
@@ -301,8 +419,12 @@ func (u *ui) changeRows(diff service.Comparison, mode string, threshold int64) [
 		if item := changed.Item(); focused.Matches(item, "") {
 			row := changeRow(changed)
 			if files && item.Kind != "" {
-				row.Mark = model.RemovalOf(item.Kind)
-				row.Facts = append(row.Facts, fact{"Removal", string(row.Mark)})
+				labels := diff.Latest.Coverage.Labels
+				if changed.After == nil {
+					labels = diff.Baseline.Coverage.Labels
+				}
+				row.Mark = model.CaptureRemoval(item.Kind, labels)
+				row.Facts = append(row.Facts, fact{"Removal", removalTitle(row.Mark)})
 			}
 			rows = append(rows, row)
 		}
@@ -363,10 +485,13 @@ func (u *ui) showChangeSummary(mode string) {
 	u.changeDates = timeText(diff.Baseline.Captured) + " → " + timeText(diff.Latest.Captured)
 	var notes []string
 	if diff.ShortWindow {
-		notes = append(notes, "Shorter history than the chosen period")
+		notes = append(notes, "Only the dates above are available for this period")
 	}
 	if diff.Omitted > 0 {
-		notes = append(notes, fmt.Sprintf("%d changes omitted for incomplete coverage", diff.Omitted))
+		notes = append(notes, fmt.Sprintf("%d readings could not be compared", diff.Omitted))
+	}
+	if diff.Baseline.Coverage.Estimated > 0 || diff.Latest.Coverage.Estimated > 0 {
+		notes = append(notes, "Some locations used estimated sizes")
 	}
 	if mode == model.Images || mode == model.BuildCache {
 		notes = append(notes, "Individual entries can share data")
@@ -438,6 +563,13 @@ func (u *ui) changesView(gtx layout.Context) layout.Dimensions {
 		u.chooseChangeScope()
 	}
 	if u.period.Changed() {
+		u.refreshComparison()
+	}
+	if u.toScan.Changed() {
+		u.chooseEarlierScan(0)
+		u.loadComparison()
+	}
+	if u.fromScan.Changed() {
 		u.loadComparison()
 	}
 	if u.changeMode.Changed() {
@@ -453,16 +585,39 @@ func (u *ui) changesView(gtx layout.Context) layout.Dimensions {
 		u.backChanges()
 	}
 	context := func(gtx layout.Context) layout.Dimensions {
-		return flow{gap: 18, rowGap: 8, middle: true}.Layout(gtx,
+		controls := []layout.Widget{
 			func(gtx layout.Context) layout.Dimensions {
 				return labeled(gtx, t, "Location", func(gtx layout.Context) layout.Dimensions { return u.changeScope.Layout(gtx, t) })
 			},
 			func(gtx layout.Context) layout.Dimensions {
 				return labeled(gtx, t, "Compare", func(gtx layout.Context) layout.Dimensions { return u.period.Layout(gtx, t) })
 			},
-		)
+		}
+		if u.period.value() == pickScans && len(u.history) >= 2 {
+			controls = append(controls,
+				func(gtx layout.Context) layout.Dimensions {
+					return labeled(gtx, t, "From", func(gtx layout.Context) layout.Dimensions { return u.fromScan.Layout(gtx, t) })
+				},
+				func(gtx layout.Context) layout.Dimensions {
+					return labeled(gtx, t, "To", func(gtx layout.Context) layout.Dimensions { return u.toScan.Layout(gtx, t) })
+				},
+			)
+		}
+		return flow{gap: 16, rowGap: 8, middle: true}.Layout(gtx, controls...)
 	}
-	children := []layout.FlexChild{layout.Rigid(context), layout.Rigid(space(0, 14))}
+	children := []layout.FlexChild{layout.Rigid(context)}
+	if dateLine := strings.TrimSpace(strings.Join([]string{u.changeDates, u.historyNotice}, "  ")); dateLine != "" {
+		children = append(children, layout.Rigid(space(0, 6)), layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return t.label(gtx, t.small(t.quiet).wrapped(2), dateLine)
+		}))
+	}
+	if u.canOpenFirstScan() {
+		children = append(children, layout.Rigid(space(0, 8)), layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min.X = 0
+			return t.button(gtx, &u.viewFirstScan, buttonStyle{icon: iconFolder, label: "View what uses space"})
+		}))
+	}
+	children = append(children, layout.Rigid(space(0, 14)))
 	if u.changeReady {
 		children = append(children,
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return u.summaryCard(gtx, u.changeSummary) }),
@@ -473,7 +628,7 @@ func (u *ui) changesView(gtx layout.Context) layout.Dimensions {
 		return u.results(gtx, &u.changePane, resultsHeader{
 			title: u.changeListTitle(),
 			count: itemCount(count, u.comparison.Baseline.ID != 0),
-			notes: u.changeNotes + u.changeStatus,
+			notes: strings.TrimSpace(strings.Join([]string{u.changeNotes, u.changeStatus}, "  ")),
 			back: func() *widget.Clickable {
 				if u.focused != nil {
 					return &u.changeBack

@@ -24,21 +24,21 @@ func TestKindOfPath(t *testing.T) {
 		`C:\Program Files (x86)\Steam\appcache`:                           model.CacheKind,
 		`C:\Program Files (x86)\Steam\steamapps`:                          model.GameKind,
 		`c:\program files (x86)\steam\steamapps\common\Portal 2\bin`:      model.GameKind,
-		`D:\SteamLibrary\steamapps\shadercache\620`:                       model.CacheKind,
-		`D:\SteamLibrary\steamapps\downloading`:                           model.TempKind,
+		`D:\SteamLibrary\steamapps\shadercache\620`:                       model.PossibleCleanupKind,
+		`D:\SteamLibrary\steamapps\downloading`:                           model.PossibleCleanupKind,
 		`C:\Program Files\Epic Games\Fortnite\Cache`:                      model.GameKind,
 		`C:\Program Files\Epic Games\Launcher`:                            model.ProgramKind,
 		`C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Anno`: model.GameKind,
 		`C:\XboxGames\Halo Infinite`:                                      model.GameKind,
 		`C:\Users\ana\AppData\Local\Temp\build-1`:                         model.TempKind,
 		`C:\Users\ana\AppData\Local\Programs\Microsoft VS Code`:           model.ProgramKind,
-		`C:\Users\ana\AppData\Roaming\Code\Cache`:                         model.CacheKind,
+		`C:\Users\ana\AppData\Roaming\Code\Cache`:                         model.PossibleCleanupKind,
 		`C:\Users\ana\AppData\Roaming\Code\User`:                          model.AppKind,
 		`C:\Users\ana\AppData\Local\npm-cache\_cacache`:                   model.PackageKind,
 		`C:\Users\ana\.nuget\packages\newtonsoft.json`:                    model.PackageKind,
 		`C:\Users\ana\go\pkg\mod`:                                         model.PackageKind,
 		`C:\Users\ana\.cargo\registry`:                                    model.PackageKind,
-		`C:\Users\ana\.cache\huggingface`:                                 model.CacheKind,
+		`C:\Users\ana\.cache\huggingface`:                                 model.PossibleCleanupKind,
 		`C:\Users\ana\.vscode\extensions\ext\node_modules`:                model.AppKind,
 		`C:\Users\ana\Downloads\setup`:                                    model.DownloadKind,
 		`C:\Users\ana\Documents\Notes`:                                    model.PersonalKind,
@@ -46,7 +46,7 @@ func TestKindOfPath(t *testing.T) {
 		`C:\Users\ana\Documents\Backups`:                                  model.BackupKind,
 		`C:\Users\ana\Documents\Virtual Machines\Ubuntu`:                  model.VirtualKind,
 		`C:\Users\ana\Documents\site\node_modules\react`:                  model.BuildKind,
-		`C:\Users\ana\Documents\site\dist`:                                model.PersonalKind,
+		`C:\Users\ana\Documents\site\dist`:                                model.BuildKind,
 		`C:\Users\ana\source\app\target`:                                  model.BuildKind,
 		`C:\Users\ana\source\app-wt`:                                      model.CheckoutKind,
 		`C:\Users\ana\Downloads\Program Files`:                            model.DownloadKind,
@@ -88,7 +88,7 @@ func TestClassifyUnitsAndFiles(t *testing.T) {
 		{"site-backup.zip", placeOf(`C:\work`, model.FilesKind), model.BackupKind},
 		{"backup.vhdx", placeOf(`C:\work`, model.FilesKind), model.BackupKind},
 		{"photos.zip", placeOf(`C:\work`, model.FilesKind), model.FilesKind},
-		{"crash.dmp", placeOf(`C:\work`, model.FilesKind), model.CacheKind},
+		{"crash.dmp", placeOf(`C:\work`, model.FilesKind), model.PossibleCleanupKind},
 		{"crash.dmp", placeOf(`C:\Games\Space`, model.GameKind), model.GameKind},
 	} {
 		if got := classify(tc.name, tc.at, false); got.kind != tc.want || got.unit {
@@ -98,8 +98,12 @@ func TestClassifyUnitsAndFiles(t *testing.T) {
 }
 
 func TestContentLabel(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "CACHEDIR.TAG"), []byte(cacheSignature), 0600); err != nil {
+		t.Fatal(err)
+	}
 	dir := func(name string) dirEntry { return dirEntry{Name: name, Attrs: attrsDirectory} }
-	file := func(name string) dirEntry { return dirEntry{Name: name} }
+	file := func(name string) dirEntry { return dirEntry{Name: name, Length: int64(len(cacheSignature))} }
 	for _, tc := range []struct {
 		entries []dirEntry
 		kind    string
@@ -108,16 +112,16 @@ func TestContentLabel(t *testing.T) {
 		{[]dirEntry{file("README.md"), dir(".git")}, model.FilesKind, model.ProjectKind},
 		{[]dirEntry{file(".git")}, model.PersonalKind, model.ProjectKind},
 		{[]dirEntry{file("App.sln")}, model.FilesKind, model.ProjectKind},
-		{[]dirEntry{dir(".git"), file("CACHEDIR.TAG")}, model.FilesKind, model.CacheKind},
+		{[]dirEntry{dir(".git"), file("CACHEDIR.TAG")}, model.FilesKind, model.ProjectKind},
 		{[]dirEntry{file(".build.info"), file("Game.exe")}, model.ProgramKind, model.GameKind},
 		{[]dirEntry{file("UnityPlayer.dll"), file("package.json")}, model.FilesKind, model.ProjectKind},
 		{[]dirEntry{dir(".egstore")}, model.FilesKind, model.GameKind},
 		{[]dirEntry{dir(".git")}, model.ProgramKind, ""},
 		{[]dirEntry{dir(".git")}, model.DownloadKind, ""},
-		{[]dirEntry{file("CACHEDIR.TAG")}, model.BuildKind, ""},
+		{[]dirEntry{file("CACHEDIR.TAG")}, model.BuildKind, model.CacheKind},
 		{[]dirEntry{dir("CACHEDIR.TAG")}, model.FilesKind, ""},
 	} {
-		got, ok := contentLabel(tc.entries, tc.kind)
+		got, ok := contentLabel(root, tc.entries, tc.kind)
 		if got.kind != tc.want || ok != (tc.want != "") {
 			t.Errorf("contentLabel(%v, %q) = %+v, want %q", tc.entries, tc.kind, got, tc.want)
 		}
@@ -141,6 +145,13 @@ func TestCaptureLabelsCategoriesAndUnits(t *testing.T) {
 	write(`repo\src\main.go`, mib)
 	write(`repo\node_modules\left-pad\index.js`, 2*mib)
 	write(`repo\artifacts\CACHEDIR.TAG`, 0)
+	if err := os.WriteFile(filepath.Join(root, `repo\artifacts\CACHEDIR.TAG`), []byte(cacheSignature), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tagBytes, _, err := FileAllocation(context.Background(), filepath.Join(root, `repo\artifacts\CACHEDIR.TAG`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	write(`repo\artifacts\blob.bin`, 3*mib)
 	write(`SteamLibrary\steamapps\common\Space Game\game.bin`, 4*mib)
 	write(`SteamLibrary\steamapps\shadercache\620\shaders.bin`, mib)
@@ -169,7 +180,7 @@ func TestCaptureLabelsCategoriesAndUnits(t *testing.T) {
 		t.Fatalf("category totals %d should add up to the measured %d: %+v", categories, folders, byKind)
 	}
 	for kind, want := range map[string]int64{
-		model.ProjectKind: 2 * mib, model.BuildKind: 2 * mib, model.CacheKind: 4 * mib,
+		model.ProjectKind: 2 * mib, model.BuildKind: 2 * mib, model.CacheKind: 3*mib + tagBytes, model.PossibleCleanupKind: mib,
 		model.GameKind: 7 * mib, model.ProgramKind: mib, model.FilesKind: mib,
 	} {
 		if byKind[kind] != want {
@@ -185,7 +196,7 @@ func TestCaptureLabelsCategoriesAndUnits(t *testing.T) {
 		kind  string
 		bytes int64
 	}{
-		"repo":        {model.ProjectKind, 7 * mib},
+		"repo":        {model.ProjectKind, 2 * mib},
 		"Space Game":  {model.GameKind, 4 * mib},
 		"Launcher":    {model.ProgramKind, mib},
 		"Nested Game": {model.GameKind, 2 * mib},
@@ -204,12 +215,12 @@ func TestCaptureLabelsCategoriesAndUnits(t *testing.T) {
 	for _, item := range model.RecordsIn(s, model.Candidates) {
 		candidates[filepath.Base(item.Path)] = item
 	}
-	for name, kind := range map[string]string{"node_modules": model.BuildKind, "artifacts": model.CacheKind, "shadercache": model.CacheKind} {
+	for name, kind := range map[string]string{"node_modules": model.BuildKind, "artifacts": model.CacheKind, "shadercache": model.PossibleCleanupKind} {
 		if got := candidates[name]; got.Kind != kind {
 			t.Errorf("review candidate %s = %+v, want %s", name, got, kind)
 		}
 	}
-	if got := candidates["artifacts"]; got.Detail == "" || got.Bytes != 3*mib {
+	if got := candidates["artifacts"]; got.Detail == "" || got.Bytes != 3*mib+tagBytes {
 		t.Errorf("a tagged cache should explain its label: %+v", got)
 	}
 	for _, item := range model.RecordsIn(s, model.Folders) {
@@ -218,6 +229,56 @@ func TestCaptureLabelsCategoriesAndUnits(t *testing.T) {
 				t.Errorf("the repository's folder reading should be relabeled: %+v", item)
 			}
 		}
+	}
+}
+
+func TestCleanupCandidatesPartitionTheirCategories(t *testing.T) {
+	root := t.TempDir()
+	for path, data := range map[string][]byte{
+		`worktrees\project\copy.bin`:                    make([]byte, units.MiB),
+		`worktrees\project\cache\CACHEDIR.TAG`:          []byte(cacheSignature),
+		`worktrees\project\cache\blob.bin`:              make([]byte, units.MiB/2),
+		`worktrees\project\node_modules\dependency.bin`: make([]byte, units.MiB),
+		`Client work\cache\unique.bin`:                  make([]byte, units.MiB),
+		`Important project\CACHEDIR.TAG`:                {},
+		`Important project\original.bin`:                make([]byte, units.MiB),
+	} {
+		path = filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := capture(t, context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	totals, _ := model.RemovalTotals(s)
+	tagBytes, _, err := FileAllocation(context.Background(), filepath.Join(root, `worktrees\project\cache\CACHEDIR.TAG`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	safeBytes := units.MiB/2 + tagBytes
+	if totals[model.SafeToClear] != safeBytes || totals[model.CheckFirst] != 3*units.MiB || totals[model.Keep] != units.MiB {
+		t.Fatalf("unexpected totals: %+v", totals)
+	}
+	bytes := make(map[string]int64)
+	for _, item := range model.RecordsIn(s, model.Candidates) {
+		rel, _ := filepath.Rel(root, item.Path)
+		bytes[rel] = item.Bytes
+	}
+	for path, want := range map[string]int64{
+		`worktrees`: units.MiB, `worktrees\project\cache`: safeBytes,
+		`worktrees\project\node_modules`: units.MiB, `Client work\cache`: units.MiB,
+	} {
+		if bytes[path] != want {
+			t.Fatalf("candidate %s got %d bytes, want %d: %+v", path, bytes[path], want, bytes)
+		}
+	}
+	if len(bytes) != 4 {
+		t.Fatalf("unexpected candidates: %+v", bytes)
 	}
 }
 

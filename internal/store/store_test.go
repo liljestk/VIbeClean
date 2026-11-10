@@ -195,6 +195,30 @@ func TestPartialSizesAreOmitted(t *testing.T) {
 	}
 }
 
+func TestCleanupChangesRequireMatchingLabels(t *testing.T) {
+	coverage := model.Coverage{Labels: model.LabelsVersion}
+	key := model.RowKey{Series: model.Candidates, Key: "same"}
+	old := model.Record{Series: key.Series, Key: key.Key, Path: `C:\work\cache`, Kind: model.CacheKind, Bytes: 2 << 20}
+	before := map[model.RowKey]model.Record{key: old}
+	changes, omitted, err := calculateChanges(context.Background(), before, nil, coverage, coverage)
+	if err != nil || len(changes) != 0 || omitted != 1 {
+		t.Fatalf("a candidate that leaves the series has no measured delta: %+v, %d, %v", changes, omitted, err)
+	}
+	fresh := old
+	fresh.Bytes /= 2
+	after := map[model.RowKey]model.Record{key: fresh}
+	changes, omitted, err = calculateChanges(context.Background(), before, after, coverage, coverage)
+	if err != nil || len(changes) != 1 || changes[0].Bytes != -(1<<20) || omitted != 0 {
+		t.Fatalf("the same category can be compared: %+v, %d, %v", changes, omitted, err)
+	}
+	fresh.Kind = model.PossibleCleanupKind
+	after[key] = fresh
+	changes, omitted, err = calculateChanges(context.Background(), before, after, coverage, coverage)
+	if err != nil || len(changes) != 0 || omitted != 1 {
+		t.Fatalf("a relabeled candidate has no measured delta: %+v, %d, %v", changes, omitted, err)
+	}
+}
+
 func TestVersionOneUpgradeAndEndpointChanges(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "history.sqlite3")

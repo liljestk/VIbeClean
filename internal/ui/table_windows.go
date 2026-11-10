@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"image"
+	"image/color"
 	"io"
 	"log/slog"
 	"slices"
@@ -77,6 +78,8 @@ type rankedPane struct {
 	empty   string
 	// emptyText is shown when there are no rows at all.
 	emptyText string
+	// Files keeps missing paths out of the displayed rows.
+	missingPaths map[string]bool
 
 	list    widget.List
 	clicks  map[int]*widget.Clickable
@@ -91,6 +94,9 @@ type rankedPane struct {
 
 	// Inspector actions.
 	open, copy, inspect widget.Clickable
+	cleanupAction       widget.Clickable
+	cleanup             bool
+	fileIcons           bool
 	copied              bool
 	openText            string
 	inspectText         string
@@ -100,8 +106,10 @@ type rankedPane struct {
 	inspectReady        bool
 	inspectBlocked      bool
 	rankTitle           string
+	rankLinks           map[model.RowKey]*widget.Clickable
 	details             widget.List
 	onOpen, onInspect   func()
+	onSort              func()
 }
 
 func (p *rankedPane) init(columns [4]column, changes bool, rankTitle string) {
@@ -110,6 +118,9 @@ func (p *rankedPane) init(columns [4]column, changes bool, rankTitle string) {
 	p.list.Axis = layout.Vertical
 	p.details.Axis = layout.Vertical
 	p.clicks = make(map[int]*widget.Clickable)
+	if changes {
+		p.rankLinks = make(map[model.RowKey]*widget.Clickable)
+	}
 	p.sortCol = 1
 }
 
@@ -125,14 +136,15 @@ func (p *rankedPane) selectedKey() (model.RowKey, bool) {
 	return model.RowKey{Series: row.Item.Series, Key: row.Item.Key}, ok
 }
 
-func (p *rankedPane) restoreSelection(key model.RowKey) {
+func (p *rankedPane) restoreSelection(key model.RowKey) bool {
 	for index, source := range p.rows {
 		row := &p.items[source]
 		if row.Item.Series == key.Series && row.Item.Key == key.Key {
 			p.setCurrent(index)
-			return
+			return true
 		}
 	}
+	return false
 }
 
 func (p *rankedPane) setCurrent(index int) {
@@ -196,7 +208,7 @@ func (p *rankedPane) applyFilter(query string, key model.RowKey, keep bool) {
 	rows := p.rows[:0]
 	for index := range p.items {
 		row := &p.items[index]
-		if filter.Matches(row.Item, row.Detail) {
+		if !p.missingPaths[row.Item.Path] && filter.Matches(row.Item, row.Detail) {
 			rows = append(rows, index)
 		}
 	}
@@ -204,6 +216,9 @@ func (p *rankedPane) applyFilter(query string, key model.RowKey, keep bool) {
 	p.empty = p.emptyText
 	if len(rows) == 0 && len(p.items) > 0 {
 		p.empty = "No matches. Try a different search."
+		if len(p.missingPaths) > 0 {
+			p.empty = "No current items match."
+		}
 	}
 	if !p.sorted {
 		p.sortCol, p.sortAsc, p.sorted = 1, false, true
@@ -225,6 +240,10 @@ func (p *rankedPane) applyFilter(query string, key model.RowKey, keep bool) {
 }
 
 func (p *rankedPane) sortRows() {
+	if p.onSort != nil {
+		// Inventory pages arrive in the backend's global sort order.
+		return
+	}
 	column, ascending := p.sortCol, p.sortAsc
 	slices.SortFunc(p.rows, func(left, right int) int {
 		ordering := compareColumn(&p.items[left], &p.items[right], column)
@@ -260,6 +279,9 @@ func (p *rankedPane) sortBy(column int) {
 	}
 	if p.current < 0 {
 		p.setCurrent(0)
+	}
+	if p.onSort != nil {
+		p.onSort()
 	}
 }
 
@@ -454,9 +476,12 @@ func (p *rankedPane) layoutTable(gtx layout.Context, t *theme) layout.Dimensions
 		}
 	}
 	size := gtx.Constraints.Max
+	headerH := gtx.Dp(32)
+	if size.Y < headerH {
+		return layout.Dimensions{Size: size}
+	}
 	gutter := gtx.Dp(10) // room for the overlay scrollbar
 	shown, widths := p.visibleColumns(gtx, t, size.X-gutter)
-	headerH := gtx.Dp(32)
 	rowH := gtx.Dp(38)
 	padX := gtx.Dp(12)
 	focused := gtx.Focused(p)
@@ -490,6 +515,7 @@ func (p *rankedPane) layoutTable(gtx layout.Context, t *theme) layout.Dimensions
 					title += " ↓"
 				}
 			}
+			defer t.exposeButton(gtx, image.Pt(w, headerH), &p.headers[c], "Sort by "+title).Pop()
 			c2 := t.quiet
 			if p.headers[c].Hovered() || p.sortCol == c {
 				c2 = t.ink
@@ -580,6 +606,25 @@ func (p *rankedPane) layoutRow(gtx layout.Context, t *theme, index int, shown [4
 	row := &p.items[p.rows[index]]
 	w := gtx.Constraints.Max.X
 	size := image.Pt(w, rowH)
+	if t.access != nil {
+		key := model.RowKey{Series: row.Item.Series, Key: row.Item.Key}
+		selectRow := func() { p.restoreSelection(key) }
+		name := strings.Trim(strings.Join(row.Cells[:], ", "), ", ")
+		if row.Mark != "" && p.changes {
+			name += ", " + removalTitle(row.Mark)
+		}
+		if p.fileIcons && row.Item.Path != "" {
+			if row.Item.Directory {
+				name = "Folder, " + name
+			} else {
+				name = "File, " + name
+			}
+		}
+		defer clip.Rect{Max: size}.Push(gtx.Ops).Pop()
+		t.markAccess(gtx, accessKey{tag: p, item: key.Series + "\x00" + key.Key},
+			accessNode{name: name, role: accessRow, tag: p, focused: focused && index == p.current,
+				invoke: selectRow, beforeFocus: selectRow})
+	}
 	bg := t.surface
 	switch {
 	case index == p.current:
@@ -619,6 +664,18 @@ func (p *rankedPane) layoutRow(gtx layout.Context, t *theme, index int, shown [4
 		}
 		inner := max(0, cw-2*padX)
 		textX := x + padX
+		if c == 0 && p.fileIcons && row.Item.Path != "" {
+			ic := iconFile
+			if row.Item.Directory {
+				ic = iconFolder
+			}
+			iconSize := gtx.Dp(14)
+			stack := op.Offset(image.Pt(textX, (rowH-iconSize)/2)).Push(gtx.Ops)
+			drawIcon(gtx, ic, 14, s.color)
+			stack.Pop()
+			textX += gtx.Dp(22)
+			inner = max(0, inner-gtx.Dp(22))
+		}
 		if c == p.marked && row.Mark != "" {
 			dot := gtx.Dp(8)
 			mark := op.Offset(image.Pt(textX, (rowH-dot)/2)).Push(gtx.Ops)
@@ -645,8 +702,15 @@ func (p *rankedPane) layoutRow(gtx layout.Context, t *theme, index int, shown [4
 // layoutInspector draws the selected row, its actions and the chart of the
 // largest visible rows. Wide panes stack the sections; short ones put them
 // side by side.
-func (p *rankedPane) layoutInspector(gtx layout.Context, u *ui, horizontal bool) layout.Dimensions {
+func (p *rankedPane) layoutInspector(gtx layout.Context, u *ui) layout.Dimensions {
 	t := u.th
+	for row, click := range p.rankLinks {
+		if click.Clicked(gtx) && p.restoreSelection(row) {
+			p.details.Position = layout.Position{}
+			gtx.Execute(key.FocusCmd{Tag: p})
+			gtx.Execute(op.InvalidateCmd{})
+		}
+	}
 	if p.open.Clicked(gtx) && p.canOpen() && p.onOpen != nil {
 		p.onOpen()
 	}
@@ -655,6 +719,19 @@ func (p *rankedPane) layoutInspector(gtx layout.Context, u *ui, horizontal bool)
 	}
 	if p.inspect.Clicked(gtx) && p.canInspect() {
 		p.onInspect()
+		if u.details != nil {
+			u.closeDetails(gtx)
+		}
+	}
+	if p.cleanupAction.Clicked(gtx) && p.cleanup {
+		if row, ok := p.selected(); ok {
+			u.openCleanup(row.Item.Kind)
+		}
+	}
+	if p == &u.filePane && u.deleteButton.Clicked(gtx) {
+		if row, ok := p.selected(); ok {
+			u.openRecycle(gtx, row.Item)
+		}
 	}
 	size := gtx.Constraints.Max
 	fill(gtx, t.chrome, size, 10)
@@ -663,14 +740,8 @@ func (p *rankedPane) layoutInspector(gtx layout.Context, u *ui, horizontal bool)
 	ranking := func(gtx layout.Context) layout.Dimensions { return p.layoutRanking(gtx, t) }
 	return pad.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		gtx.Constraints.Min = gtx.Constraints.Max
-		if horizontal {
-			return layout.Flex{Spacing: layout.SpaceBetween}.Layout(gtx,
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					return scrollColumn(gtx, &p.details, selection)
-				}),
-				layout.Rigid(space(20, 0)),
-				layout.Flexed(1, ranking),
-			)
+		if u.canShowMap() {
+			return scrollColumn(gtx, &p.details, selection)
 		}
 		return scrollColumn(gtx, &p.details, selection, space(0, 22), ranking)
 	})
@@ -693,7 +764,7 @@ func (p *rankedPane) layoutSelection(gtx layout.Context, u *ui) layout.Dimension
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return drawIcon(gtx, iconPanel, 15, t.quiet) }),
 			layout.Rigid(space(7, 0)),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return t.label(gtx, t.strong(12, t.quiet), "Inspector")
+				return t.label(gtx, t.strong(12, t.quiet), "Selected item")
 			}),
 		)
 	}
@@ -763,6 +834,13 @@ func (p *rankedPane) layoutSelection(gtx layout.Context, u *ui) layout.Dimension
 		var buttons []layout.Widget
 		// A category total spans many folders, so only its name can be copied.
 		folderActions := row.Item.Series != model.Categories
+		if p.cleanup {
+			if label, _ := cleanupShortcut(row.Item.Kind); label != "" {
+				buttons = append(buttons, func(gtx layout.Context) layout.Dimensions {
+					return t.button(gtx, &p.cleanupAction, buttonStyle{icon: iconChevronRight, label: label, compact: true})
+				})
+			}
+		}
 		if p.inspectText != "" && folderActions {
 			buttons = append(buttons, func(gtx layout.Context) layout.Dimensions {
 				return t.button(gtx, &p.inspect, buttonStyle{icon: p.inspectIcon, label: p.inspectText, disabled: !p.canInspect(), compact: true})
@@ -770,11 +848,13 @@ func (p *rankedPane) layoutSelection(gtx layout.Context, u *ui) layout.Dimension
 		}
 		if p.openText != "" && folderActions {
 			buttons = append(buttons, func(gtx layout.Context) layout.Dimensions {
-				ic := iconFolder
+				ic, label := iconFolder, p.openText
 				if p.projectAction {
 					ic = iconChevronRight
+				} else if !row.Item.Directory && row.Item.Path != "" {
+					label = "Show in Explorer"
 				}
-				return t.button(gtx, &p.open, buttonStyle{icon: ic, label: p.openText, disabled: !p.canOpen(), compact: true})
+				return t.button(gtx, &p.open, buttonStyle{icon: ic, label: label, disabled: !p.canOpen(), compact: true})
 			})
 		}
 		buttons = append(buttons, func(gtx layout.Context) layout.Dimensions {
@@ -784,6 +864,11 @@ func (p *rankedPane) layoutSelection(gtx layout.Context, u *ui) layout.Dimension
 			}
 			return t.button(gtx, &p.copy, buttonStyle{icon: ic, label: copyText, compact: true})
 		})
+		if p == &u.filePane && u.canOfferDelete(row.Item) {
+			buttons = append(buttons, func(gtx layout.Context) layout.Dimensions {
+				return t.button(gtx, &u.deleteButton, buttonStyle{label: "Delete…", compact: true, disabled: u.active != nil})
+			})
+		}
 		return flow{gap: 6, rowGap: 6}.Layout(gtx, buttons...)
 	}))
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
@@ -793,8 +878,10 @@ func (p *rankedPane) layoutRanking(gtx layout.Context, t *theme) layout.Dimensio
 	var buffer [5]int
 	ranked := largest(p.items, p.rows, buffer[:])
 	if len(ranked) == 0 {
+		clear(p.rankLinks)
 		return layout.Dimensions{}
 	}
+	var keys [5]model.RowKey
 	top := float32(p.items[ranked[0]].Rank)
 	children := []layout.FlexChild{
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions { return t.label(gtx, t.strong(12, t.ink), p.rankTitle) }),
@@ -802,14 +889,20 @@ func (p *rankedPane) layoutRanking(gtx layout.Context, t *theme) layout.Dimensio
 	}
 	for i, source := range ranked {
 		row := p.items[source]
+		rowKey := model.RowKey{Series: row.Item.Series, Key: row.Item.Key}
+		keys[i] = rowKey
 		barColor := t.blue
 		if p.changes && !t.contrast {
 			barColor = t.tone(row.Delta)
 		}
 		if i > 0 {
-			children = append(children, layout.Rigid(space(0, 9)))
+			gap := unit.Dp(9)
+			if p.changes {
+				gap = 3
+			}
+			children = append(children, layout.Rigid(space(0, gap)))
 		}
-		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+		bar := func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return spread(gtx, 8,
@@ -823,7 +916,38 @@ func (p *rankedPane) layoutRanking(gtx layout.Context, t *theme) layout.Dimensio
 					return t.meter(gtx, float32(row.Rank)/top, barColor, 5)
 				}),
 			)
+		}
+		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if !p.changes {
+				return bar(gtx)
+			}
+			click := p.rankLinks[rowKey]
+			if click == nil {
+				click = new(widget.Clickable)
+				p.rankLinks[rowKey] = click
+			}
+			return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				pointer.CursorPointer.Add(gtx.Ops)
+				var bg color.NRGBA
+				if click.Hovered() || click.Pressed() {
+					bg = t.well
+				}
+				d := record(gtx, func(gtx layout.Context) layout.Dimensions {
+					return t.panel(gtx, layout.Inset{Top: 4, Bottom: 4, Left: 4, Right: 4}, 6, bg, bar)
+				})
+				defer t.exposeButton(gtx, d.size, click, "Select "+row.Item.Name+", "+row.Cells[1]).Pop()
+				d.call.Add(gtx.Ops)
+				if gtx.Focused(click) {
+					t.focusRing(gtx, d.size, 6)
+				}
+				return layout.Dimensions{Size: d.size}
+			})
 		}))
+	}
+	for key := range p.rankLinks {
+		if !slices.Contains(keys[:len(ranked)], key) {
+			delete(p.rankLinks, key)
+		}
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }

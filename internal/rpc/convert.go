@@ -111,12 +111,14 @@ func drivesFromPB(drives []*pb.Drive) []model.DriveState {
 
 func coverageToPB(c model.Coverage) *pb.Coverage {
 	return &pb.Coverage{ScopeKind: scopeKindToPB(c.ScopeKind), Drives: drivesToPB(c.Drives), Gaps: c.Gaps,
+		Exclusions: c.Exclusions, Inventory: c.Inventory, EstimatedPaths: c.EstimatePaths,
 		FilesChecked: c.Checked, RepeatedLinks: c.Shared, OnlineOnly: c.Online, SkippedLinks: c.Links,
 		EstimatedDirs: c.Estimated, Subfolders: c.Subfolders, Kind: c.Kind, Engine: c.Engine, Labels: int32(c.Labels)}
 }
 
 func coverageFromPB(c *pb.Coverage) model.Coverage {
 	return model.Coverage{ScopeKind: scopeKindFromPB(c.GetScopeKind()), Drives: drivesFromPB(c.GetDrives()), Gaps: c.GetGaps(),
+		Exclusions: c.GetExclusions(), Inventory: c.GetInventory(), EstimatePaths: c.GetEstimatedPaths(),
 		Checked: c.GetFilesChecked(), Shared: c.GetRepeatedLinks(), Online: c.GetOnlineOnly(), Links: c.GetSkippedLinks(),
 		Estimated: c.GetEstimatedDirs(), Subfolders: c.GetSubfolders(), Kind: c.GetKind(), Engine: c.GetEngine(),
 		Labels: int(c.GetLabels())}
@@ -129,7 +131,7 @@ func recordToPB(r *model.Record) *pb.Record {
 	return &pb.Record{Series: seriesToPB[r.Series], Key: r.Key, Name: r.Name, Path: r.Path, Kind: r.Kind,
 		Bytes: r.Bytes, Files: r.Files, Modified: millisToPB(r.Modified), Directory: r.Directory,
 		Activity: r.Activity, Detail: r.Detail, Group: r.Group, Idle: r.Idle,
-		ReclaimableBytes: r.Reclaimable, Partial: r.Partial}
+		ReclaimableBytes: r.Reclaimable, Partial: r.Partial, LogicalBytes: r.Logical}
 }
 
 func recordFromPB(r *pb.Record) *model.Record {
@@ -139,7 +141,7 @@ func recordFromPB(r *pb.Record) *model.Record {
 	return &model.Record{Series: seriesName(r.GetSeries()), Key: r.GetKey(), Name: r.GetName(), Path: r.GetPath(),
 		Kind: r.GetKind(), Bytes: r.GetBytes(), Files: r.GetFiles(), Modified: millisFromPB(r.GetModified()),
 		Directory: r.GetDirectory(), Activity: r.GetActivity(), Detail: r.GetDetail(), Group: r.GetGroup(),
-		Idle: r.GetIdle(), Reclaimable: r.GetReclaimableBytes(), Partial: r.GetPartial()}
+		Idle: r.GetIdle(), Reclaimable: r.GetReclaimableBytes(), Partial: r.GetPartial(), Logical: r.GetLogicalBytes()}
 }
 
 func snapshotToPB(s model.Snapshot) *pb.Snapshot {

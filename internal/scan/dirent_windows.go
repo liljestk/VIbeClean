@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -61,16 +63,47 @@ func (e dirEntry) link() bool {
 // directoryReader lists folders in metadata batches and counts its work for
 // diagnostics. It reuses one buffer, so a callback must not start another listing.
 type directoryReader struct {
-	buffer       [64 * 1024]byte
-	estimated    int64
-	directories  int64
-	batches      int64
-	sizeLookups  int64
-	sizeFailures int64
-	gapKinds     map[string]int
+	buffer        [64 * 1024]byte
+	estimated     int64
+	estimatePaths []string
+	directories   int64
+	batches       int64
+	sizeLookups   int64
+	sizeFailures  int64
+	gapKinds      map[string]int
 }
 
 func longPath(path string) string { return `\\?\` + path }
+
+const cacheSignature = "Signature: 8a477f597d28d172789f06886806bc55"
+
+// A cache tag is the only file content the scanner reads. Read just the
+// signature and avoid opening links or recalling cloud placeholders.
+func validCacheTag(dir string, entry dirEntry) bool {
+	if entry.Attrs&(attrsDirectory|attrsReparse|attrsOffline) != 0 || entry.Length < int64(len(cacheSignature)) ||
+		!strings.EqualFold(entry.Name, "CACHEDIR.TAG") {
+		return false
+	}
+	name, err := windows.UTF16PtrFromString(longPath(filepath.Join(dir, entry.Name)))
+	if err != nil {
+		return false
+	}
+	handle, err := windows.CreateFile(name, windows.GENERIC_READ, shareAll, nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_OPEN_REPARSE_POINT|fileFlagOpenNoRecall, 0)
+	if err != nil {
+		return false
+	}
+	file := os.NewFile(uintptr(handle), entry.Name)
+	defer file.Close()
+	var info windows.ByHandleFileInformation
+	if windows.GetFileInformationByHandle(handle, &info) != nil ||
+		info.FileAttributes&(attrsDirectory|attrsReparse|attrsOffline) != 0 {
+		return false
+	}
+	var header [len(cacheSignature)]byte
+	_, err = io.ReadFull(file, header[:])
+	return err == nil && string(header[:]) == cacheSignature
+}
 
 // compressedSize returns the bytes a file stores on disk, including data kept
 // by the Windows Overlay Filter. It reads metadata only and returns 0 on failure.
@@ -221,6 +254,9 @@ func filetimeMillis(ticks uint64) int64 {
 // It reports logical sizes, so the capture marks these folders as estimated.
 func (r *directoryReader) fallback(ctx context.Context, path string, consume func(dirEntry)) error {
 	r.estimated++
+	if len(r.estimatePaths) < 64 {
+		r.estimatePaths = append(r.estimatePaths, path)
+	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return err

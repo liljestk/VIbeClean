@@ -1,13 +1,20 @@
 package local
 
 import (
+	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/gob"
+	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/windows"
 
 	"github.com/liljestk/VIbeClean/internal/buildinfo"
 	"github.com/liljestk/VIbeClean/internal/diag"
@@ -27,8 +34,7 @@ const largeCapture = 500_000
 type Service struct {
 	index     *store.Index
 	indexPath string
-	// gate allows one capture at a time in this process. Captures from other
-	// processes are ordered by the index.
+	// gate queues captures in this process before they take the index's lock.
 	gate chan struct{}
 
 	// Measurement and drive probes, replaceable in tests.
@@ -82,6 +88,23 @@ func (s *Service) Scopes(ctx context.Context) ([]model.Snapshot, error) {
 	return s.index.List(ctx)
 }
 
+// History returns the saved capture choices for a scope.
+func (s *Service) History(ctx context.Context, ref string) ([]model.Snapshot, error) {
+	scope, err := s.resolve(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return s.index.History(ctx, scope)
+}
+
+func (s *Service) Inventory(ctx context.Context, q service.InventoryQuery) (service.InventoryPage, error) {
+	return s.index.Inventory(ctx, q)
+}
+
+func (s *Service) StreamInventory(ctx context.Context, q service.InventoryQuery, emit func(model.Record) error) error {
+	return s.index.StreamInventory(ctx, q, emit)
+}
+
 // Latest returns the latest capture of a scope with its records filtered and
 // sorted largest first.
 func (s *Service) Latest(ctx context.Context, q service.LatestQuery) (service.Latest, error) {
@@ -125,7 +148,7 @@ func (s *Service) refreshRecommended(saved model.Snapshot) bool {
 	return scan.RefreshRecommended(saved, s.driveStates(roots))
 }
 
-// Compare ranks changes between the latest capture of a scope and a baseline.
+// Compare ranks changes between two captures of a scope.
 func (s *Service) Compare(ctx context.Context, q service.CompareQuery) (service.Comparison, error) {
 	if err := validate(q); err != nil {
 		return service.Comparison{}, err
@@ -134,7 +157,12 @@ func (s *Service) Compare(ctx context.Context, q service.CompareQuery) (service.
 	if err != nil {
 		return service.Comparison{}, err
 	}
-	diff, err := s.index.Compare(ctx, scope, q.Days)
+	var diff model.Comparison
+	if q.FromID != 0 || q.ToID != 0 {
+		diff, err = s.index.ComparePair(ctx, scope, q.FromID, q.ToID)
+	} else {
+		diff, err = s.index.Compare(ctx, scope, q.Days)
+	}
 	if err != nil {
 		return service.Comparison{}, err
 	}
@@ -160,6 +188,8 @@ func (s *Service) Compare(ctx context.Context, q service.CompareQuery) (service.
 
 func validate(q service.CompareQuery) error {
 	switch {
+	case (q.FromID != 0 || q.ToID != 0) && (q.FromID <= 0 || q.ToID <= q.FromID || q.Days != 0):
+		return model.InvalidArgument("choose a comparison period or an earlier and a later capture")
 	case q.Days < 0 || q.Days > service.MaxDays:
 		return model.InvalidArgument("choose a window from 0 to %d days", service.MaxDays)
 	case q.MinimumBytes < 0:
@@ -183,12 +213,35 @@ func keep(item model.Change, series string, q service.CompareQuery, filter model
 // Capture measures a scope and saves it. One capture runs at a time; later
 // requests wait for it or for their context to end.
 func (s *Service) Capture(ctx context.Context, req service.CaptureRequest, progress func(service.Progress)) (saved model.Snapshot, err error) {
-	select {
-	case s.gate <- struct{}{}:
-		defer func() { <-s.gate }()
-	case <-ctx.Done():
-		return model.Snapshot{}, ctx.Err()
+	return s.capture(ctx, req, progress, true)
+}
+
+// CaptureIfIdle is used by scheduled jobs. It skips a run when another
+// desktop, MCP, API, or scheduled capture is using this index.
+func (s *Service) CaptureIfIdle(ctx context.Context, req service.CaptureRequest) (model.Snapshot, error) {
+	return s.capture(ctx, req, nil, false)
+}
+
+func (s *Service) capture(ctx context.Context, req service.CaptureRequest, progress func(service.Progress), wait bool) (saved model.Snapshot, err error) {
+	if wait {
+		select {
+		case s.gate <- struct{}{}:
+		case <-ctx.Done():
+			return model.Snapshot{}, ctx.Err()
+		}
+	} else {
+		select {
+		case s.gate <- struct{}{}:
+		default:
+			return model.Snapshot{}, ErrCaptureBusy
+		}
 	}
+	defer func() { <-s.gate }()
+	release, err := s.lockCapture(ctx, wait)
+	if err != nil {
+		return model.Snapshot{}, err
+	}
+	defer release()
 	started := time.Now()
 	scopeType := model.ScopeType(req.Scope)
 	stage := "measure"
@@ -197,10 +250,44 @@ func (s *Service) Capture(ctx context.Context, req service.CaptureRequest, progr
 		diag.Duration(ctx, "capture.finish", started, err, slog.String("scope_type", scopeType), slog.String("stage", stage),
 			slog.Int64("capture_id", saved.ID), slog.Int64("files_checked", saved.Coverage.Checked))
 	}()
-	saved, err = s.measure(ctx, req, progress)
+	var request scan.Request
+	var spool *os.File
+	var writer *bufio.Writer
+	if req.Detail {
+		if strings.EqualFold(strings.TrimSpace(req.Scope), model.DockerScope) {
+			return model.Snapshot{}, model.InvalidArgument("file detail applies to files and folders")
+		}
+		// Task Scheduler can stop a capture when the PC leaves idle or loses AC power.
+		scratchPath := filepath.Join(os.TempDir(), "space-review-inventory-"+rand.Text()+".tmp")
+		spool, err = os.OpenFile(scratchPath, os.O_CREATE|os.O_EXCL|os.O_RDWR|windows.O_FILE_FLAG_DELETE_ON_CLOSE, 0600)
+		if err != nil {
+			return model.Snapshot{}, err
+		}
+		defer spool.Close()
+		writer = bufio.NewWriterSize(spool, 256*1024)
+		encoder := gob.NewEncoder(writer)
+		request.Inventory = func(item model.InventoryEntry) error { return encoder.Encode(&item) }
+		request.ScratchPath = spool.Name()
+	}
+	var lastChecked int64
+	forward := progress
+	if progress != nil {
+		forward = func(p service.Progress) {
+			lastChecked = max(lastChecked, p.FilesChecked)
+			progress(p)
+		}
+	}
+	saved, err = s.measure(ctx, req, request, forward)
 	if err == nil {
 		stage = "save"
-		err = s.index.Save(ctx, &saved)
+		if progress != nil {
+			progress(service.Progress{FilesChecked: max(lastChecked, saved.Coverage.Checked), Saving: true})
+		}
+		if spool == nil {
+			err = s.index.Save(ctx, &saved)
+		} else {
+			err = s.saveDetailed(ctx, &saved, spool, writer)
+		}
 	}
 	if saved.Coverage.Checked >= largeCapture {
 		releaseStarted := time.Now()
@@ -213,11 +300,29 @@ func (s *Service) Capture(ctx context.Context, req service.CaptureRequest, progr
 	return saved, nil
 }
 
-func (s *Service) measure(ctx context.Context, req service.CaptureRequest, progress func(service.Progress)) (model.Snapshot, error) {
+func (s *Service) saveDetailed(ctx context.Context, saved *model.Snapshot, spool *os.File, writer *bufio.Writer) error {
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	decoder := gob.NewDecoder(bufio.NewReaderSize(spool, 256*1024))
+	return s.index.SaveWithInventory(ctx, saved, func() (model.InventoryEntry, error) {
+		var entry model.InventoryEntry
+		err := decoder.Decode(&entry)
+		return entry, err
+	})
+}
+
+func (s *Service) measure(ctx context.Context, req service.CaptureRequest, request scan.Request, progress func(service.Progress)) (model.Snapshot, error) {
 	if strings.EqualFold(strings.TrimSpace(req.Scope), model.DockerScope) {
+		if len(req.Exclusions) != 0 {
+			return model.Snapshot{}, model.InvalidArgument("scan exclusions apply to files and folders")
+		}
 		return s.captureDocker(ctx)
 	}
-	request := scan.Request{Scope: strings.TrimSpace(req.Scope), Kind: req.Kind}
+	request.Scope, request.Kind, request.Exclusions = strings.TrimSpace(req.Scope), req.Kind, req.Exclusions
 	if request.Scope == "" || strings.EqualFold(request.Scope, model.QuickScope) {
 		request.Scope = model.QuickScope
 		request.Extra = s.dockerDisks()

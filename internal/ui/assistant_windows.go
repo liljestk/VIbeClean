@@ -102,8 +102,8 @@ func analysisPrompt(saved model.Snapshot, series string, items []displayRow, row
 	for _, index := range ranked {
 		row := items[index]
 		fmt.Fprintf(&prompt, "- %q, %s", analysisName(row.Item.Name), row.Cells[1])
-		if files && row.Item.Kind != "" {
-			fmt.Fprintf(&prompt, ", %s, %s", row.Item.Kind, model.RemovalOf(row.Item.Kind))
+		if files && row.Mark != "" {
+			fmt.Fprintf(&prompt, ", %s, %s", row.Item.Kind, row.Mark)
 		}
 		if diff != nil {
 			fmt.Fprintf(&prompt, ", before %s, after %s", row.Cells[2], row.Cells[3])
@@ -207,6 +207,8 @@ func (d *assistantDialog) layout(gtx layout.Context, u *ui) {
 			layout.Rigid(space(0, 12)),
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 				size := gtx.Constraints.Max
+				t.expose(gtx, size, accessKey{tag: &d.editor}, accessNode{name: "Assistant question", value: d.editor.Text(),
+					role: accessEdit, tag: &d.editor, setValue: d.editor.SetText})
 				fill(gtx, t.surface, size, 8)
 				edge := t.line
 				if gtx.Focused(&d.editor) {

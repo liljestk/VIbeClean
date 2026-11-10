@@ -42,7 +42,7 @@ func (u *ui) initDocker() {
 	u.dockerPane.openText = "Show project items"
 	u.dockerPane.onOpen = u.inspectProject
 	u.dockerMode.setOptions(model.SupportedSeries(model.ScopeDocker, false), 0)
-	u.dockerFilter.prompt = "Search Docker resources"
+	u.dockerFilter.prompt, u.dockerFilter.shortcut = "Search Docker resources", findShortcut
 }
 
 func (u *ui) startDocker() {
@@ -56,7 +56,7 @@ func (u *ui) startDocker() {
 	u.renderDocker()
 	go func() {
 		defer diag.RecoverPanic(ctx, "gui.docker_worker")
-		saved, err := backend.Capture(ctx, service.CaptureRequest{Scope: model.DockerScope}, nil)
+		saved, err := backend.Capture(ctx, service.CaptureRequest{Scope: model.DockerScope}, u.captureProgress(task))
 		if u.ctx.Err() != nil {
 			return
 		}

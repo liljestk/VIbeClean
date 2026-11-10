@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -121,6 +122,88 @@ func TestErrorsKeepTheirKind(t *testing.T) {
 	}
 }
 
+func TestDetailedCaptureAndMatchingExclusions(t *testing.T) {
+	ctx := context.Background()
+	backend, err := local.Open(ctx, filepath.Join(t.TempDir(), "index.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = backend.Close() })
+	remote, _ := serve(t, backend)
+	root := t.TempDir()
+	data, skip := filepath.Join(root, "Data"), filepath.Join(root, "Ignored")
+	zip, copyPath := filepath.Join(data, "medium.zip"), filepath.Join(data, "copy.zip")
+	diagtest.CreateFile(t, zip, 4*units.MiB)
+	diagtest.CreateFile(t, copyPath, 4*units.MiB)
+	if err := os.Link(zip, filepath.Join(data, "alias.zip")); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(data, "different.txt")
+	diagtest.CreateFile(t, other, 4*units.MiB)
+	f, err := os.OpenFile(other, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := f.Write([]byte("different"))
+	if err := errors.Join(writeErr, f.Close()); err != nil {
+		t.Fatal(err)
+	}
+	diagtest.CreateFile(t, filepath.Join(skip, "large.zip"), 6*units.MiB)
+	first, err := remote.Capture(ctx, service.CaptureRequest{Scope: root}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := service.CaptureRequest{Scope: root, Detail: true, Exclusions: []string{skip}}
+	second, err := remote.Capture(ctx, req, nil)
+	if err != nil || !second.Coverage.Inventory || len(second.Coverage.Exclusions) != 1 || second.Coverage.Checked != 4 {
+		t.Fatalf("detailed capture = %+v, %v", second, err)
+	}
+	q := service.InventoryQuery{CaptureID: second.ID, Files: true, Extension: ".ZIP", Within: data, SortColumn: 1, Limit: 1}
+	page, err := remote.Inventory(ctx, q)
+	if err != nil || page.Total != 3 || len(page.Items) != 1 || filepath.Ext(page.Items[0].Path) != ".zip" ||
+		page.Items[0].Bytes <= 0 || page.Items[0].Bytes >= model.FileFloor {
+		t.Fatalf("small file inventory = %+v, %v", page, err)
+	}
+	var streamed []model.Record
+	if err := remote.StreamInventory(ctx, q, func(row model.Record) error {
+		streamed = append(streamed, row)
+		return nil
+	}); err != nil || len(streamed) != page.Total || streamed[0].Key != page.Items[0].Key {
+		t.Fatalf("filtered stream = %+v, %v", streamed, err)
+	}
+	children, err := remote.Inventory(ctx, service.InventoryQuery{CaptureID: second.ID, Limit: 8})
+	if err != nil || len(children.Items) != 1 || children.Items[0].Path != data || children.Items[0].Files != 4 {
+		t.Fatalf("root inventory = %+v, %v", children, err)
+	}
+	dupes, err := remote.Duplicates(ctx, second.ID, data)
+	if err != nil || len(dupes.Groups) != 1 || dupes.Checked != 4 || dupes.Skipped != 0 {
+		t.Fatalf("duplicates = %+v, %v", dupes, err)
+	}
+	group := dupes.Groups[0]
+	if len(group.Copies) != 2 || len(group.Copies[0].Paths)+len(group.Copies[1].Paths) != 3 ||
+		group.Reclaimable(group.SuggestedKeep()) != page.Items[0].Bytes {
+		t.Fatalf("duplicate copies or reclaimable size = %+v", group)
+	}
+	if _, err := remote.Compare(ctx, service.CompareQuery{Scope: root, FromID: first.ID, ToID: second.ID}); !errors.Is(err, model.ErrInvalidArgument) {
+		t.Fatalf("comparison of different exclusions = %v", err)
+	}
+	third, err := remote.Capture(ctx, req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remote.Inventory(ctx, q); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("old inventory is still current: %v", err)
+	}
+	history, err := remote.History(ctx, root)
+	if err != nil || len(history) != 3 || history[0].ID != third.ID || history[2].ID != first.ID {
+		t.Fatalf("history = %+v, %v", history, err)
+	}
+	diff, err := remote.Compare(ctx, service.CompareQuery{Scope: root, FromID: second.ID, ToID: third.ID})
+	if err != nil || diff.Baseline.ID != second.ID || diff.Latest.ID != third.ID || len(diff.Changes) != 0 {
+		t.Fatalf("exact comparison = %+v, %v", diff, err)
+	}
+}
+
 // streamingBackend reports progress and then fails or waits, for stream tests.
 type streamingBackend struct {
 	service.Backend
@@ -131,6 +214,7 @@ func (b streamingBackend) Capture(ctx context.Context, _ service.CaptureRequest,
 	for checked := int64(1); checked <= 3; checked++ {
 		progress(service.Progress{FilesChecked: checked})
 	}
+	progress(service.Progress{FilesChecked: 3, Saving: true})
 	if b.fail != nil {
 		return model.Snapshot{}, b.fail
 	}
@@ -140,16 +224,18 @@ func (b streamingBackend) Capture(ctx context.Context, _ service.CaptureRequest,
 
 func TestCaptureStreamsProgressAndCancels(t *testing.T) {
 	remote, _ := serve(t, streamingBackend{fail: model.Conflict("a newer capture finished first")})
-	var seen []int64
-	_, err := remote.Capture(context.Background(), service.CaptureRequest{}, func(p service.Progress) { seen = append(seen, p.FilesChecked) })
-	if !errors.Is(err, model.ErrConflict) || err.Error() != "a newer capture finished first" || len(seen) != 3 {
+	var seen []service.Progress
+	_, err := remote.Capture(context.Background(), service.CaptureRequest{}, func(p service.Progress) { seen = append(seen, p) })
+	want := []service.Progress{{FilesChecked: 1}, {FilesChecked: 2}, {FilesChecked: 3}, {FilesChecked: 3, Saving: true}}
+	if !errors.Is(err, model.ErrConflict) || err.Error() != "a newer capture finished first" || !slices.Equal(seen, want) {
 		t.Fatalf("progress %v, err %v", seen, err)
 	}
 
 	waiting, _ := serve(t, streamingBackend{})
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	_, err = waiting.Capture(ctx, service.CaptureRequest{}, func(p service.Progress) {
-		if p.FilesChecked == 3 {
+		if p.Saving {
 			cancel()
 		}
 	})
@@ -197,6 +283,24 @@ func TestLoopbackAndTokenFile(t *testing.T) {
 	again, err := LoadOrCreateToken(path)
 	if err != nil || again != first {
 		t.Fatalf("the token should be reused: %q, %v", again, err)
+	}
+}
+
+func TestLegacyTokenIsRotatedBeforeUse(t *testing.T) {
+	path := DefaultTokenFile(filepath.Join(t.TempDir(), "index.sqlite3"))
+	legacy := strings.Repeat("a", 2*tokenBytes)
+	if err := os.WriteFile(path, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadToken(path); !errors.Is(err, errUnprotectedToken) {
+		t.Fatalf("clients must refuse an inherited ACL: %v", err)
+	}
+	rotated, err := LoadOrCreateToken(path)
+	if err != nil || rotated == legacy || len(rotated) != len(legacy) {
+		t.Fatalf("could not rotate legacy token: %v", err)
+	}
+	if token, err := ReadToken(path); err != nil || token != rotated {
+		t.Fatalf("could not read rotated token: %v", err)
 	}
 }
 

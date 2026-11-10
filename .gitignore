@@ -14,6 +14,7 @@ coverage.*
 *.sqlite3-wal
 *.sqlite3-shm
 diagnostics/
+api-token
 
 # Scanner and editor state
 .scannerwork/

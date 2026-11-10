@@ -1,6 +1,25 @@
 # Space Review
 
-Space Review is a Windows x64 executable with a GPU-drawn desktop UI built with Gio, SQLite, and a stdio MCP server. The index defaults to %LOCALAPPDATA%\SpaceReview\index.sqlite3. To keep the database with a portable copy, launch either mode with --index followed by the local database path.
+Space Review is a Windows x64 executable with a GPU-drawn desktop UI built with Gio, SQLite, a stdio MCP server, and a local gRPC API. The index defaults to `%LOCALAPPDATA%\SpaceReview\index.sqlite3`. Use `--index` to select a local database for a portable copy.
+
+## Build and run
+
+With the Go version in `go.mod` on PATH, build the Windows x64 executable from the repository root in PowerShell.
+
+```powershell
+go build -trimpath -ldflags '-H=windowsgui' -o '.\bin\Space Review.exe' ./cmd/spacereview
+& '.\bin\Space Review.exe'
+```
+
+The desktop and MCP modes open the index directly by default. To share a single backend process, start the API server, then connect the desktop or the stdio MCP server to it.
+
+```powershell
+& '.\bin\Space Review.exe' --serve
+& '.\bin\Space Review.exe' --connect 127.0.0.1:47820
+& '.\bin\Space Review.exe' --mcp --connect 127.0.0.1:47820
+```
+
+Use `--listen` on the server to select another loopback address. For a custom index, pass `--index` to the server and `--token-file` with the path to its `api-token` to each client. The server creates that file beside its index on a filesystem that supports Windows ACLs. It grants access to the Windows account running the server and rotates inherited tokens from earlier builds at startup. Clients must run as the same Windows account. When using an explicit `--token-file` on the server, give the clients the same path. The versioned API is defined in [space_review.proto](proto/spacereview/v1/space_review.proto).
 
 ## What the research informed
 
@@ -19,22 +38,44 @@ The index uses write-ahead logging on fixed drives when available, with SQLite's
 
 Startup displays the latest saved results immediately and refreshes older file results when drive or journal readings indicate activity. Quick review captures daily while selected and the app is open. Docker captures daily while its tab is open. Explicit scans always measure the selected scope.
 
-Comparisons use the latest capture and the nearest saved baseline at or before the chosen cutoff. They match Windows file identities first and pair replacements at the same path. The UI shows the actual dates, marks shorter history, and omits changes affected by incomplete coverage. Large files and the immediate subfolders of ranked folders are tracked from 64 MiB. Threshold crossings are displayed as conservative bounds. Subfolder comparisons start once both captures contain subfolder readings. Docker resource deltas remain separate from Windows virtual disk allocation. [Docker disk usage](https://docs.docker.com/reference/cli/docker/system/df/)
+Changes can compare the latest capture with a preset baseline or any two saved scans of the same location. Presets use the nearest eligible scan at or before the cutoff. The dates appear beside the comparison controls. Comparisons match file identities first and pair replacements at the same path. They require matching scan exclusions and omit readings affected by incomplete coverage. Large files and the immediate subfolders of ranked folders are tracked in history from 64 MiB. The change table marks threshold crossings as lower bounds. Docker resource deltas are shown separately from Windows virtual disk allocation. [Docker disk usage](https://docs.docker.com/reference/cli/docker/system/df/)
+
+## File exploration
+
+Scan from **Files** to save the full file and folder inventory for that location. The index keeps one paged inventory per scope, alongside compact history. Files ranks individual allocations at any depth. Folders shows the current level, and **Inspect folder** opens its children from the saved inventory. Back restores the filters, sort, page, and selection. **Scan coverage** explains allocated space, unreadable locations, estimates, and exclusions. Whole-drive results also show used space the scan could not attribute.
+
+Files checks the paths in the current results when you open a view or return to the window. It hides entries Windows confirms are missing. Scan again to update sizes and find new items.
+
+**Filters** narrows the current view by cleanup guidance, path, size, modification date, and, in Largest files, extension. **Apply filters** updates the table, and **Cancel** discards draft changes. The button shows how many filters are active. **Scan exclusions** changes what the next scan measures. **Treemap** uses the same allocations as the current page. Select a tile to highlight its row. **Inspect folder** opens the selected folder.
+
+In **Files**, select an item and choose **Details** → **Delete…**. Confirm the full path to move an eligible file or the entire folder to the Windows Recycle Bin. The app rescans the location after the move. Items in the Recycle Bin still use disk space. [Windows shell file operations](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ifileoperation-setoperationflags)
+
+**Export** saves the current filtered view as CSV or JSON, including the scan times and coverage. A detailed file export streams matching saved rows in the current sort order and skips paths hidden on the current page. CSV uses integer byte counts and escapes text that a spreadsheet could interpret as a formula.
+
+**Find duplicates** checks same-length files against their saved metadata and reads their full contents locally. It skips online-only, reparse, busy, and changed files. Each group counts distinct physical copies. Hard-link paths appear under their copy, and an allocation is counted as reclaimable only when every link to that copy is in the result. Mark the copy to keep and use Explorer to review the paths.
+
+## Scheduled captures
+
+**Schedule scans** registers a daily Windows Task Scheduler job for the current location and index. The job uses the selected executable and starts while you are signed in and Windows is awake, idle and on AC power, even with the Space Review window closed. Windows stops it when activity resumes or the PC switches to battery, and retries an idle interruption when the PC is idle again. The capture runs at background CPU and disk I/O priority. Save an existing schedule again to apply the idle and power conditions. [Windows idle conditions](https://learn.microsoft.com/en-us/windows/win32/taskschd/task-idle-conditions) · [Windows background priority](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass)
+
+The dialog shows the next scheduled time and last recorded result. Scheduled jobs skip the index if another scan is running. They use the location’s latest exclusions and detail settings.
+
+An optional free-space threshold shows a local Windows notification when a monitored volume first reaches or drops below it. A later reading above the threshold rearms the alert. The schedule dialog keeps the last low-space reading and run result. [Windows Task Scheduler](https://learn.microsoft.com/en-us/windows/win32/taskschd/schtasks) · [Windows notification area](https://learn.microsoft.com/en-us/windows/win32/shell/notification-area)
 
 ## Labels and cleanup
 
 Every measured file counts toward one category, and every category has a removal level:
 
-- **Safe to clear** · caches and logs, build output and installed dependencies, package manager caches, Windows temporary files and the Recycle Bin. Apps and tools recreate them, or they were already deleted.
-- **Check first** · downloads, backups, checkouts and worktrees, scratch folders, virtual machine and emulator disks, Docker storage and the previous Windows installation.
+- **Likely reclaimable** · validated cache directories, known tool-managed caches, Windows temporary files and the Recycle Bin. MCP calls this level **Safe to clear**.
+- **Check first** · possible caches and logs, build output and installed dependencies, downloads, backups, checkouts and worktrees, scratch folders, virtual machine and emulator disks, Docker storage and the previous Windows installation.
 - **Uninstall** · programs and games. Remove them in Settings > Apps or in their launcher, because deleting the folder leaves registrations behind.
 - **Keep** · Windows, app data, projects and personal files.
 
-Labels come from where Windows, installers and launchers put files: Program Files and per-user program folders, Steam, Epic, GOG, Ubisoft, EA, Riot and Xbox libraries, profile folders, `AppData\Local\Temp` and package manager caches. A folder's own listing can relabel it. A `.git`, `.hg` or `.svn` folder or a project manifest marks a project, a `CACHEDIR.TAG` file marks a cache, and launcher manifests or a Unity runtime mark a game. Windows, installed software, caches, generated output and backups keep their label for everything inside them, while a project's `node_modules` is still build output. Launcher rules do not apply inside app data, where launchers keep settings and overlays. [Cache directory tagging](https://bford.info/cachedir/)
+Labels come from known Windows and tool locations and from markers in each folder. A `.git`, `.hg` or `.svn` folder or a project manifest marks a project. A local `CACHEDIR.TAG` with the specified signature can mark a cache, and launcher manifests or a Unity runtime can mark a game. Names such as `cache`, `logs` and `dist` go to **Check first**. Older captures remain readable and need a fresh scan to qualify for **Safe to clear**. [Cache directory tagging](https://bford.info/cachedir/)
 
-Captures record a total per category, the top folder of each cleanup category as a review candidate, and the top folder of each program, game and project. A labeled folder inside another category's folder counts only toward its own, so a Steam game is not part of Steam's size. The Files summary leads with Safe to clear, Check first and Uninstall. Each opens the matching items, largest first, and the removal filter narrows any view. The labels are estimates, so the inspector says why a folder got its label.
+Captures record a total per category, the top folder of each cleanup category as a review candidate, and the top folder of each program, game and project. Review candidates and labeled folders count the bytes assigned to their own category. A tagged cache inside a worktree appears separately under **Likely reclaimable**. The Files summary opens the matching items, largest first. The inspector shows the evidence for the label, measured space, and the next step, with links to Windows Storage, Installed apps, the Recycle Bin, or Docker where applicable. [Windows Settings links](https://learn.microsoft.com/en-us/windows/apps/develop/launch/launch-settings)
 
-Captures store the version of the labeling rules. Review candidate and labeled folder comparisons start once both captures use the same rules. Category totals are not compared because they span drives and unreadable locations that can differ between captures. The walk reads a folder's whole listing before counting its files and decodes only the short file names that can act as markers. A scan of 3.35 million files in a user profile took 35 to 36 seconds before and after labeling.
+Captures store the version of the labeling rules. A review candidate or labeled folder is comparable when both captures measured it under the same category and labeling rules. A row that disappeared after a rename or a change of category is omitted. The drive readings show the actual movement in free space. The walk reads a folder's listing before counting its files and checks the signature of local cache tags.
 
 ## MCP
 
@@ -52,15 +93,15 @@ Files, Changes, and Docker can prepare an editable question with up to ten of th
 
 ## Desktop interaction
 
-Changes opens first. The sidebar holds navigation and drive capacity. The workspace gives the ranked results most of the width and separates drive usage from changes in comparable folders. Tone and spacing distinguish the panes. The inspector puts the selected item and its actions above the ranking chart. [Little Snitch Network Monitor](https://help.obdev.at/littlesnitch6/lsm-overview) · [Cohesity Data Cloud](https://ux-design-awards.com/winners/2026-2-cohesity-data-cloud) · [beQ Dashboard](https://ux-design-awards.com/winners/2026-1-beq-dashboard-smart-investment-reward-control) · [Apple split views](https://developer.apple.com/design/human-interface-guidelines/split-views)
+Changes opens first. After the first file scan, **View what uses space** opens the saved results in Files. The sidebar holds navigation and drive capacity. The workspace gives the ranked results most of the width and separates drive usage from changes in comparable folders. **Details** shows the selected item and its actions. Select a bar in **Largest changes** to jump to its row and show its details. [Little Snitch Network Monitor](https://help.obdev.at/littlesnitch6/lsm-overview) · [Cohesity Data Cloud](https://ux-design-awards.com/winners/2026-2-cohesity-data-cloud) · [beQ Dashboard](https://ux-design-awards.com/winners/2026-1-beq-dashboard-smart-investment-reward-control) · [Apple split views](https://developer.apple.com/design/human-interface-guidelines/split-views)
 
-Each review view has one capture action in the toolbar. The shared status strip keeps progress and cancellation available while saved results stay visible. Switching a location loads that location’s saved scan, and returning from folder inspection restores the previous search and selection. [Apple toolbars](https://developer.apple.com/design/human-interface-guidelines/toolbars) · [Feedback](https://developer.apple.com/design/human-interface-guidelines/feedback)
+Each review view has one capture action at the right edge of the toolbar. **Cancel scan** takes the same spot during a scan, with progress and saved scan dates in the status strip. **More** groups occasional actions such as export, scheduling, and scan settings. Location selectors keep long saved paths from shifting nearby controls. Open the selector to read the path. In Files, **Back** sits beside the results heading and restores the search, filters, sort order, and selection after folder inspection or a cleanup summary shortcut. [Apple toolbars](https://developer.apple.com/design/human-interface-guidelines/toolbars) · [Feedback](https://developer.apple.com/design/human-interface-guidelines/feedback)
 
 The window is drawn with Gio on the GPU, so the workspace matches the concept instead of the classic Windows controls. The title bar, palette, and focus colors follow the Windows light, dark, and high contrast settings. Folder and save choices use the Windows common item dialogs. [Gio](https://gioui.org/)
 
-The layout adapts to the window. Controls size themselves to their labels, so text is shortened only when the window is too small for it. Below 900 dp the sidebar becomes an icon rail. Below 680 dp the inspector moves under the results, and short windows give its space back to the table. The summary card wraps into balanced rows and turns denser on short windows, and filters wrap below the search field. Narrow tables hide Before, Modified, or Activity before shortening values.
+Below 960 dp the sidebar becomes an icon rail. When the workspace is at least 680 dp wide, **Details** and **Treemap** share a pane beside the table. In narrower workspaces they open on demand in a dialog. The search and view controls stay above the table. Short, narrow windows show the leading summary measurement and open the full **Summary** in a dialog. Narrow tables hide Before, Modified, or Activity before shortening values.
 
-Tab moves keyboard focus with a visible ring. In the table, the arrow, Page Up, Page Down, Home, and End keys move the selection, Enter opens the selected item, and Ctrl+C copies its path. F5 captures the current location or refreshes Docker, Ctrl+F focuses search, and Ctrl+I toggles the inspector. Signed amounts and text communicate changes alongside the bars. Gio does not expose UI Automation on Windows yet, so screen readers such as Narrator cannot read the window. [Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility)
+Tab moves keyboard focus with a visible ring. In the table, the arrow, Page Up, Page Down, Home, and End keys move the selection, Enter opens the selected item, and Ctrl+C copies its path. F5 captures the current location or refreshes Docker, Ctrl+F focuses search, and Ctrl+I toggles **Details**. Escape closes the menu or dialog in focus. The controls show their shortcuts on hover and keyboard focus. The Windows UI Automation provider exposes visible text, controls and rows to screen readers. Move through results with the table keys to bring more rows into view. [Windows UI Automation providers](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-providerportal)
 
 The window opens while the index loads. Index reads, drive probes, and Explorer launches run on workers. New selections cancel older reads, and sorting preserves the selected item's identity. Search reuses the current view's prepared rows and sorts a list of visible row indexes.
 
@@ -74,8 +115,10 @@ Logging is local and enabled at info level. Launch either mode with `--log-level
 
 ## Testing
 
-Run `go test -count=1 ./...` and `go vet ./...` in this folder. The tests cover Windows allocation and hard links, SQLite history, concurrent access and rollback, Docker usage parsing, and diagnostics rotation, contention, error reporting, and privacy.
+Run `go test -count=1 ./...` and `go vet ./...` in this folder. Windows CI builds the portable executable, runs the tests against it, and lints the API schema with `go tool '-modfile=tools/go.mod' buf lint`.
 
-To check layouts without driving the mouse, build with `-tags qa` and set `SPACE_REVIEW_QA` before launching, for example `view=files;theme=light;row=2`. The window opens in that state once history loads. Other keys open a drop-down, the assistant draft, an alert, or a simulated capture. Release builds leave this out.
+To check layouts without driving the mouse, build with `-tags qa` and set `SPACE_REVIEW_QA` before launching, for example `view=files;theme=light;row=2`. Use `scope` to open a saved location, `window=min` for the minimum window size, and `map=1` or `filters=1` to open those views. The `coverage`, `export`, `schedule`, and `duplicates` keys open the corresponding dialogs. Release builds leave this out.
 
 Set `SPACE_REVIEW_EXE` to the absolute path to a built Windows executable to run the portable MCP tests. They exercise real file changes across restart, concurrent captures and shared logs, and continued operation when logging is disabled or unavailable. Set `SPACE_REVIEW_TEST_LIVE_DOCKER=1` to also verify usage and timings against the local Docker engine.
+
+Set `SPACE_REVIEW_TEST_SCHEDULER=1` to test registration, lookup, and removal of a temporary Windows task. With `SPACE_REVIEW_EXE` set, the same test also starts the scheduled executable and checks its saved result.

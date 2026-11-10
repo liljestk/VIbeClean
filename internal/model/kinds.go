@@ -3,31 +3,32 @@ package model
 // Categories assigned to scanned locations. They are stored in the index and
 // must not change.
 const (
-	FilesKind    = "Files"
-	PersonalKind = "Personal files"
-	ProjectKind  = "Project files"
-	AppKind      = "App data"
-	ProgramKind  = "Programs"
-	GameKind     = "Games"
-	DownloadKind = "Downloads"
-	ScratchKind  = "Scratch"
-	TempKind     = "Temporary files"
-	BackupKind   = "Backups"
-	CacheKind    = "Cache & logs"
-	PackageKind  = "Package caches"
-	CheckoutKind = "Checkouts"
-	BuildKind    = "Build output"
-	RecycleKind  = "Recycle Bin"
-	VirtualKind  = "Virtual disks"
-	RecoveryKind = "Windows recovery"
-	DockerKind   = "Docker storage"
-	SystemKind   = "System files"
+	FilesKind           = "Files"
+	PersonalKind        = "Personal files"
+	ProjectKind         = "Project files"
+	AppKind             = "App data"
+	ProgramKind         = "Programs"
+	GameKind            = "Games"
+	DownloadKind        = "Downloads"
+	ScratchKind         = "Scratch"
+	TempKind            = "Temporary files"
+	BackupKind          = "Backups"
+	CacheKind           = "Cache & logs"
+	PossibleCleanupKind = "Possible cleanup"
+	PackageKind         = "Package caches"
+	CheckoutKind        = "Checkouts"
+	BuildKind           = "Build output"
+	RecycleKind         = "Recycle Bin"
+	VirtualKind         = "Virtual disks"
+	RecoveryKind        = "Windows recovery"
+	DockerKind          = "Docker storage"
+	SystemKind          = "System files"
 )
 
 // LabelsVersion identifies the labeling rules a capture used. Captures made
 // with different rules can label the same folder differently, so review
 // candidates and labeled folders are compared only within one version.
-const LabelsVersion = 1
+const LabelsVersion = 2
 
 // Removal says how the space a category uses can be reclaimed.
 type Removal string
@@ -47,17 +48,40 @@ const (
 // Removals lists the removal levels from the easiest win to the hardest.
 var Removals = []Removal{SafeToClear, CheckFirst, Uninstall, Keep}
 
+var removalByKind = map[string]Removal{
+	CacheKind: SafeToClear, PackageKind: SafeToClear, TempKind: SafeToClear, RecycleKind: SafeToClear,
+	PossibleCleanupKind: CheckFirst, BuildKind: CheckFirst, ScratchKind: CheckFirst, BackupKind: CheckFirst,
+	CheckoutKind: CheckFirst, DownloadKind: CheckFirst, VirtualKind: CheckFirst, DockerKind: CheckFirst, RecoveryKind: CheckFirst,
+	GameKind: Uninstall, ProgramKind: Uninstall,
+}
+
 // RemovalOf returns the removal level of a category.
 func RemovalOf(kind string) Removal {
-	switch kind {
-	case CacheKind, BuildKind, PackageKind, TempKind, RecycleKind:
-		return SafeToClear
-	case ScratchKind, BackupKind, CheckoutKind, DownloadKind, VirtualKind, DockerKind, RecoveryKind:
-		return CheckFirst
-	case GameKind, ProgramKind:
-		return Uninstall
+	if removal := removalByKind[kind]; removal != "" {
+		return removal
 	}
 	return Keep
+}
+
+// RemovalKinds returns the explicit kinds belonging to a removal level. For
+// Keep it returns the other kinds, since unrecognized kinds also stay in Keep.
+func RemovalKinds(removal Removal, labels int) (kinds []string, except bool) {
+	except = removal == Keep
+	for kind := range removalByKind {
+		if except || CaptureRemoval(kind, labels) == removal {
+			kinds = append(kinds, kind)
+		}
+	}
+	return kinds, except
+}
+
+// CaptureRemoval keeps older, less conservative labels reviewable after an upgrade.
+func CaptureRemoval(kind string, labels int) Removal {
+	removal := RemovalOf(kind)
+	if labels < LabelsVersion && removal == SafeToClear {
+		return CheckFirst
+	}
+	return removal
 }
 
 // RemovalNote explains a removal level.
@@ -87,6 +111,8 @@ func KindNote(kind string) string {
 		return "Backup or recovery data. Check which copies you still need."
 	case CacheKind:
 		return "Cache or diagnostic files. Check whether the owning app is using them."
+	case PossibleCleanupKind:
+		return "The name suggests a cache, log, or temporary folder. Check what it contains before removing it."
 	case PackageKind:
 		return "Downloaded packages for developer tools. They download again on the next install or build."
 	case TempKind:
@@ -96,7 +122,7 @@ func KindNote(kind string) string {
 	case CheckoutKind:
 		return "Project checkout or worktree. Check for uncommitted work before cleanup."
 	case BuildKind:
-		return "Generated output or installed dependencies. A build or install recreates it."
+		return "Likely build output or installed dependencies. Verify that a build or install can recreate it."
 	case DownloadKind:
 		return "Downloaded files and installers. Check for files you have not saved anywhere else."
 	case RecycleKind:
@@ -131,7 +157,7 @@ func RemovalTotals(s Snapshot) (totals map[Removal]int64, ok bool) {
 	totals = make(map[Removal]int64, len(Removals))
 	for _, item := range s.Records {
 		if item.Series == Categories && item.Bytes > 0 {
-			totals[RemovalOf(item.Kind)] += item.Bytes
+			totals[CaptureRemoval(item.Kind, s.Coverage.Labels)] += item.Bytes
 			ok = true
 		}
 	}

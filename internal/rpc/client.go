@@ -79,6 +79,89 @@ func (c *Client) Scopes(ctx context.Context) ([]model.Snapshot, error) {
 	return scopes, nil
 }
 
+// History returns the saved capture choices for a scope.
+func (c *Client) History(ctx context.Context, scope string) ([]model.Snapshot, error) {
+	reply, err := c.api.ListHistory(ctx, &pb.ListHistoryRequest{Scope: scope})
+	if err != nil {
+		return nil, fromStatus(err)
+	}
+	captures := make([]model.Snapshot, 0, len(reply.GetCaptures()))
+	for _, saved := range reply.GetCaptures() {
+		captures = append(captures, snapshotFromPB(saved))
+	}
+	return captures, nil
+}
+
+func (c *Client) Inventory(ctx context.Context, q service.InventoryQuery) (service.InventoryPage, error) {
+	reply, err := c.api.GetInventory(ctx, inventoryRequest(q))
+	if err != nil {
+		return service.InventoryPage{}, fromStatus(err)
+	}
+	page := service.InventoryPage{Total: int(reply.GetTotal())}
+	for _, item := range reply.GetItems() {
+		if row := recordFromPB(item); row != nil {
+			page.Items = append(page.Items, *row)
+		}
+	}
+	return page, nil
+}
+
+func inventoryRequest(q service.InventoryQuery) *pb.GetInventoryRequest {
+	return &pb.GetInventoryRequest{
+		CaptureId: q.CaptureID, Parent: q.Parent, Files: q.Files, Query: q.Query, Within: q.Within,
+		Extension: q.Extension, MinimumBytes: q.MinimumBytes, ModifiedSince: millisToPB(q.ModifiedSince),
+		Offset: clamp(q.Offset), Limit: clamp(q.Limit), SortColumn: clamp(q.SortColumn), Ascending: q.Ascending,
+		Removal: string(q.Removal),
+	}
+}
+
+func (c *Client) StreamInventory(ctx context.Context, q service.InventoryQuery, emit func(model.Record) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream, err := c.api.StreamInventory(ctx, &pb.StreamInventoryRequest{Filter: inventoryRequest(q)})
+	if err != nil {
+		return fromStatus(err)
+	}
+	for {
+		batch, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fromStatus(err)
+		}
+		for _, raw := range batch.GetItems() {
+			if item := recordFromPB(raw); item != nil {
+				if err := emit(*item); err != nil {
+					return err
+				}
+			}
+		}
+	}
+}
+
+func (c *Client) Duplicates(ctx context.Context, captureID int64, folder string) (model.DuplicateResult, error) {
+	reply, err := c.api.FindDuplicates(ctx, &pb.FindDuplicatesRequest{CaptureId: captureID, Folder: folder})
+	if err != nil {
+		return model.DuplicateResult{}, fromStatus(err)
+	}
+	result := model.DuplicateResult{Checked: reply.GetChecked(), Skipped: reply.GetSkipped(), Offline: reply.GetOffline()}
+	for _, group := range reply.GetGroups() {
+		item := model.DuplicateGroup{Length: group.GetLogicalBytes()}
+		for _, copy := range group.GetCopies() {
+			if len(copy.GetPaths()) > 0 {
+				item.Copies = append(item.Copies, model.DuplicateCopy{
+					Paths: copy.GetPaths(), Bytes: copy.GetAllocatedBytes(), Links: copy.GetLinkCount(),
+				})
+			}
+		}
+		if len(item.Copies) >= 2 {
+			result.Groups = append(result.Groups, item)
+		}
+	}
+	return result, nil
+}
+
 // Latest returns the latest capture of a scope.
 func (c *Client) Latest(ctx context.Context, q service.LatestQuery) (service.Latest, error) {
 	series, err := seriesValue(q.Series)
@@ -99,7 +182,8 @@ func (c *Client) Compare(ctx context.Context, q service.CompareQuery) (service.C
 		return service.Comparison{}, err
 	}
 	reply, err := c.api.CompareCaptures(ctx, &pb.CompareCapturesRequest{Scope: q.Scope, Days: clamp(q.Days), Series: series,
-		MinimumBytes: q.MinimumBytes, Direction: directionToPB(q.Direction), Query: q.Query, Limit: clamp(q.Limit)})
+		MinimumBytes: q.MinimumBytes, Direction: directionToPB(q.Direction), Query: q.Query, Limit: clamp(q.Limit),
+		FromId: q.FromID, ToId: q.ToID})
 	if err != nil {
 		return service.Comparison{}, fromStatus(err)
 	}
@@ -108,7 +192,7 @@ func (c *Client) Compare(ctx context.Context, q service.CompareQuery) (service.C
 
 // Capture measures a scope on the server, reporting progress as it arrives.
 func (c *Client) Capture(ctx context.Context, req service.CaptureRequest, progress func(service.Progress)) (model.Snapshot, error) {
-	stream, err := c.api.Capture(ctx, &pb.CaptureRequest{Scope: req.Scope, Kind: req.Kind})
+	stream, err := c.api.Capture(ctx, &pb.CaptureRequest{Scope: req.Scope, Kind: req.Kind, Exclusions: req.Exclusions, Detail: req.Detail})
 	if err != nil {
 		return model.Snapshot{}, fromStatus(err)
 	}
@@ -123,7 +207,7 @@ func (c *Client) Capture(ctx context.Context, req service.CaptureRequest, progre
 		switch event := event.GetEvent().(type) {
 		case *pb.CaptureResponse_Progress:
 			if progress != nil {
-				progress(service.Progress{FilesChecked: event.Progress.GetFilesChecked()})
+				progress(service.Progress{FilesChecked: event.Progress.GetFilesChecked(), Saving: event.Progress.GetSaving()})
 			}
 		case *pb.CaptureResponse_Snapshot:
 			return snapshotFromPB(event.Snapshot), nil

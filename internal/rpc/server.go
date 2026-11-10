@@ -17,6 +17,7 @@ import (
 
 	pb "github.com/liljestk/VIbeClean/gen/spacereview/v1"
 	"github.com/liljestk/VIbeClean/internal/diag"
+	"github.com/liljestk/VIbeClean/internal/model"
 	"github.com/liljestk/VIbeClean/internal/service"
 )
 
@@ -145,6 +146,78 @@ func (s *Server) ListScopes(ctx context.Context, _ *pb.ListScopesRequest) (*pb.L
 	return reply, nil
 }
 
+// ListHistory returns the saved capture choices for a scope.
+func (s *Server) ListHistory(ctx context.Context, req *pb.ListHistoryRequest) (*pb.ListHistoryResponse, error) {
+	history, err := s.backend.History(ctx, req.GetScope())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	reply := &pb.ListHistoryResponse{Captures: make([]*pb.Snapshot, 0, len(history))}
+	for _, capture := range history {
+		reply.Captures = append(reply.Captures, snapshotToPB(capture))
+	}
+	return reply, nil
+}
+
+func (s *Server) GetInventory(ctx context.Context, req *pb.GetInventoryRequest) (*pb.GetInventoryResponse, error) {
+	page, err := s.backend.Inventory(ctx, inventoryQuery(req))
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	reply := &pb.GetInventoryResponse{Total: clamp(page.Total), Items: make([]*pb.Record, 0, len(page.Items))}
+	for i := range page.Items {
+		reply.Items = append(reply.Items, recordToPB(&page.Items[i]))
+	}
+	return reply, nil
+}
+
+func inventoryQuery(req *pb.GetInventoryRequest) service.InventoryQuery {
+	return service.InventoryQuery{
+		CaptureID: req.GetCaptureId(), Parent: req.GetParent(), Files: req.GetFiles(), Query: req.GetQuery(), Within: req.GetWithin(),
+		Extension: req.GetExtension(), MinimumBytes: req.GetMinimumBytes(), ModifiedSince: millisFromPB(req.GetModifiedSince()),
+		Offset: int(req.GetOffset()), Limit: int(req.GetLimit()), SortColumn: int(req.GetSortColumn()), Ascending: req.GetAscending(),
+		Removal: model.Removal(req.GetRemoval()),
+	}
+}
+
+func (s *Server) StreamInventory(req *pb.StreamInventoryRequest, stream pb.SpaceReviewService_StreamInventoryServer) error {
+	items := make([]*pb.Record, 0, 64)
+	send := func() error {
+		err := stream.Send(&pb.StreamInventoryResponse{Items: items})
+		items = items[:0]
+		return err
+	}
+	if err := s.backend.StreamInventory(stream.Context(), inventoryQuery(req.GetFilter()), func(item model.Record) error {
+		items = append(items, recordToPB(&item))
+		if len(items) == cap(items) {
+			return send()
+		}
+		return nil
+	}); err != nil {
+		return toStatus(err)
+	}
+	if len(items) != 0 {
+		return send()
+	}
+	return nil
+}
+
+func (s *Server) FindDuplicates(ctx context.Context, req *pb.FindDuplicatesRequest) (*pb.FindDuplicatesResponse, error) {
+	result, err := s.backend.Duplicates(ctx, req.GetCaptureId(), req.GetFolder())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	reply := &pb.FindDuplicatesResponse{Checked: result.Checked, Skipped: result.Skipped, Offline: result.Offline}
+	for _, group := range result.Groups {
+		item := &pb.DuplicateGroup{LogicalBytes: group.Length}
+		for _, copy := range group.Copies {
+			item.Copies = append(item.Copies, &pb.DuplicateCopy{Paths: copy.Paths, AllocatedBytes: copy.Bytes, LinkCount: copy.Links})
+		}
+		reply.Groups = append(reply.Groups, item)
+	}
+	return reply, nil
+}
+
 // GetLatest returns the latest capture of a scope.
 func (s *Server) GetLatest(ctx context.Context, req *pb.GetLatestRequest) (*pb.GetLatestResponse, error) {
 	latest, err := s.backend.Latest(ctx, service.LatestQuery{Scope: req.GetScope(), Series: seriesName(req.GetSeries()),
@@ -159,7 +232,7 @@ func (s *Server) GetLatest(ctx context.Context, req *pb.GetLatestRequest) (*pb.G
 func (s *Server) CompareCaptures(ctx context.Context, req *pb.CompareCapturesRequest) (*pb.CompareCapturesResponse, error) {
 	diff, err := s.backend.Compare(ctx, service.CompareQuery{Scope: req.GetScope(), Days: int(req.GetDays()),
 		Series: seriesName(req.GetSeries()), MinimumBytes: req.GetMinimumBytes(), Direction: directionFromPB(req.GetDirection()),
-		Query: req.GetQuery(), Limit: int(req.GetLimit())})
+		Query: req.GetQuery(), Limit: int(req.GetLimit()), FromID: req.GetFromId(), ToID: req.GetToId()})
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -168,11 +241,13 @@ func (s *Server) CompareCaptures(ctx context.Context, req *pb.CompareCapturesReq
 
 // Capture measures a scope, streaming progress and then the saved snapshot.
 func (s *Server) Capture(req *pb.CaptureRequest, stream pb.SpaceReviewService_CaptureServer) error {
-	saved, err := s.backend.Capture(stream.Context(), service.CaptureRequest{Scope: req.GetScope(), Kind: req.GetKind()},
+	saved, err := s.backend.Capture(stream.Context(), service.CaptureRequest{
+		Scope: req.GetScope(), Kind: req.GetKind(), Exclusions: req.GetExclusions(), Detail: req.GetDetail(),
+	},
 		func(p service.Progress) {
 			// A failed send means the client went away; the context cancels the capture.
 			_ = stream.Send(&pb.CaptureResponse{Event: &pb.CaptureResponse_Progress{
-				Progress: &pb.CaptureProgress{FilesChecked: p.FilesChecked}}})
+				Progress: &pb.CaptureProgress{FilesChecked: p.FilesChecked, Saving: p.Saving}}})
 		})
 	if err != nil {
 		return toStatus(err)

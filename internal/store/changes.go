@@ -80,7 +80,11 @@ func (m *matcher) gapChanged(item *model.Record) bool {
 }
 
 func (m *matcher) incomparable(series string, old, fresh *model.Record) bool {
-	return (series == model.Candidates && (m.before.Kind != m.after.Kind || m.before.Labels != m.after.Labels)) ||
+	labeled := series == model.Candidates || series == model.Labeled
+	// A row can leave a labeled series because it was renamed, relabeled or
+	// crossed a tracking threshold. Only compare readings that still match.
+	return (labeled && (old == nil || fresh == nil || old.Kind != fresh.Kind ||
+		m.before.Kind != m.after.Kind || m.before.Labels != m.after.Labels)) ||
 		(old != nil && old.Partial) || (fresh != nil && fresh.Partial) ||
 		m.driveChanged(old) || m.driveChanged(fresh) || m.gapChanged(old) || m.gapChanged(fresh)
 }
@@ -88,8 +92,6 @@ func (m *matcher) incomparable(series string, old, fresh *model.Record) bool {
 func (m *matcher) add(key model.RowKey, old, fresh *model.Record) {
 	switch {
 	case key.Series == model.Subfolders && (!m.before.Subfolders || !m.after.Subfolders),
-		// Labeled folders start once both captures use the same label rules.
-		key.Series == model.Labeled && m.before.Labels != m.after.Labels,
 		// Category totals span every drive and unreadable location in a capture.
 		key.Series == model.Categories:
 		return

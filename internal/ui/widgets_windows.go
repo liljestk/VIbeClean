@@ -6,6 +6,7 @@ import (
 
 	"gioui.org/f32"
 	"gioui.org/font"
+	"gioui.org/gesture"
 	"gioui.org/io/event"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
@@ -91,10 +92,12 @@ const (
 )
 
 type buttonStyle struct {
-	kind     buttonKind
-	icon     icon
-	label    string
-	disabled bool
+	kind           buttonKind
+	icon           icon
+	label          string
+	accessibleName string
+	shortcut       string
+	disabled       bool
 	// pressed shows a toggle button's on state.
 	pressed bool
 	// compact uses a smaller control for secondary actions.
@@ -111,7 +114,14 @@ func (t *theme) button(gtx layout.Context, c *widget.Clickable, s buttonStyle) l
 	if s.compact {
 		height, padX, size = 30, 10, 13
 	}
-	return c.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	dims := c.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		name := s.label
+		if s.accessibleName != "" {
+			name = s.accessibleName
+		}
+		if s.shortcut != "" {
+			name += " (" + s.shortcut + ")"
+		}
 		fg := t.ink
 		bg, edge := t.surface, t.line
 		switch s.kind {
@@ -157,6 +167,7 @@ func (t *theme) button(gtx layout.Context, c *widget.Clickable, s buttonStyle) l
 		h := max(gtx.Dp(height), inner.Size.Y)
 		size := image.Pt(max(inner.Size.X, gtx.Constraints.Min.X), h)
 		size.X = min(size.X, max(gtx.Constraints.Max.X, inner.Size.X))
+		defer t.exposeButton(gtx, size, c, name).Pop()
 		alpha := uint8(255)
 		if s.disabled {
 			alpha = 140
@@ -175,6 +186,28 @@ func (t *theme) button(gtx layout.Context, c *widget.Clickable, s buttonStyle) l
 		}
 		return layout.Dimensions{Size: size}
 	})
+	if gtx.Enabled() && s.shortcut != "" && (c.Hovered() || gtx.Focused(c)) {
+		t.shortcutHint(gtx, dims.Size, s.shortcut)
+	}
+	return dims
+}
+
+// shortcutHint overlays a control's key binding without shifting the layout.
+func (t *theme) shortcutHint(gtx layout.Context, anchor image.Point, shortcut string) {
+	style := t.small(t.ink)
+	width := min(anchor.X, t.measure(gtx, style, shortcut)+gtx.Dp(16))
+	if width <= gtx.Dp(16) {
+		return
+	}
+	record := op.Record(gtx.Ops)
+	offset := op.Offset(image.Pt(anchor.X-width, anchor.Y+gtx.Dp(4))).Push(gtx.Ops)
+	gtx.Constraints = layout.Constraints{Min: image.Pt(width, 0), Max: image.Pt(width, gtx.Dp(32))}
+	dims := t.panel(gtx, layout.Inset{Top: 4, Bottom: 4, Left: 8, Right: 8}, 5, t.surface, func(gtx layout.Context) layout.Dimensions {
+		return t.label(gtx, style, shortcut)
+	})
+	outline(gtx, t.line, dims.Size, 5, 1)
+	offset.Pop()
+	op.Defer(gtx.Ops, record.Stop())
 }
 
 func mix(a, b color.NRGBA, amount float32) color.NRGBA {
@@ -354,15 +387,21 @@ type selectBox struct {
 	open     bool
 	disabled bool
 	// prefix is shown before the value, for example "≥ ".
-	prefix   string
-	name     string
-	button   widget.Clickable
-	items    []widget.Clickable
-	list     widget.List
-	hot      int
-	changed  bool
-	scrim    bool // event tag for clicks outside the open list
-	widthFor struct {
+	prefix string
+	name   string
+	// A command menu shows a fixed label and reports the chosen action.
+	command      string
+	unavailable  []bool
+	displayValue func(string) string
+	maxWidth     unit.Dp
+	popupWidth   unit.Dp
+	button       widget.Clickable
+	items        []widget.Clickable
+	list         widget.List
+	hot          int
+	changed      bool
+	scrim        bool // event tag for clicks outside the open list
+	widthFor     struct {
 		options []string
 		px      int
 		metric  unit.Metric
@@ -385,10 +424,21 @@ func (s *selectBox) value() string {
 
 func (s *selectBox) choose(index int) {
 	index = clampIndex(index, len(s.options))
-	if index != s.index {
+	if index >= 0 && !s.optionDisabled(index) && (s.command != "" || index != s.index) {
 		s.index = index
 		s.changed = true
 	}
+}
+
+func (s *selectBox) optionDisabled(index int) bool {
+	return index >= 0 && index < len(s.unavailable) && s.unavailable[index]
+}
+
+func (s *selectBox) visibleOptions() int {
+	if s.popupWidth > 0 {
+		return min(len(s.options), 8)
+	}
+	return min(len(s.options), 9)
 }
 
 func clampIndex(index, n int) int {
@@ -418,26 +468,22 @@ func (s *selectBox) Changed() bool {
 }
 
 func (s *selectBox) update(gtx layout.Context) {
-	if s.disabled {
+	if s.disabled || !gtx.Enabled() {
 		s.open = false
 		return
 	}
-	for s.button.Clicked(gtx) {
-		s.open = !s.open
-		s.hot = s.index
-		if s.open {
-			s.list.Axis = layout.Vertical
-			s.list.Position.First = max(0, s.index-3)
-		}
+	filters := []event.Filter{
+		key.Filter{Focus: &s.button, Name: key.NameUpArrow},
+		key.Filter{Focus: &s.button, Name: key.NameDownArrow},
+		key.Filter{Focus: &s.button, Name: key.NameEscape},
+		key.Filter{Focus: &s.button, Name: key.NameHome},
+		key.Filter{Focus: &s.button, Name: key.NameEnd},
+	}
+	if s.open {
+		filters = append(filters, key.Filter{Focus: &s.button, Name: key.NameReturn}, key.Filter{Focus: &s.button, Name: key.NameEnter})
 	}
 	for {
-		e, ok := gtx.Event(
-			key.Filter{Focus: &s.button, Name: key.NameUpArrow},
-			key.Filter{Focus: &s.button, Name: key.NameDownArrow},
-			key.Filter{Focus: &s.button, Name: key.NameEscape},
-			key.Filter{Focus: &s.button, Name: key.NameHome},
-			key.Filter{Focus: &s.button, Name: key.NameEnd},
-		)
+		e, ok := gtx.Event(filters...)
 		if !ok {
 			break
 		}
@@ -457,23 +503,46 @@ func (s *selectBox) update(gtx layout.Context) {
 			step = len(s.options)
 		case key.NameEscape:
 			s.open = false
+		case key.NameReturn, key.NameEnter:
+			if s.open && s.hot >= 0 {
+				s.choose(s.hot)
+			}
+			s.open = false
 		}
 		if step != 0 {
+			if s.command != "" && !s.open {
+				s.open = true
+				s.hot = -1
+			}
 			if s.open {
-				s.hot = clampIndex(s.hot+step, len(s.options))
+				next := clampIndex(s.hot+step, len(s.options))
+				for next >= 0 && next < len(s.options) && s.optionDisabled(next) {
+					if step < 0 {
+						next--
+					} else {
+						next++
+					}
+				}
+				if next >= 0 && next < len(s.options) {
+					s.hot = next
+					if next < s.list.Position.First || next >= s.list.Position.First+s.visibleOptions() {
+						s.list.Position = layout.Position{First: max(0, next-s.visibleOptions()+1)}
+					}
+				}
 			} else {
 				s.choose(s.index + step)
 			}
 		}
 	}
-	for {
-		e, ok := gtx.Event(key.Filter{Focus: &s.button, Name: key.NameReturn}, key.Filter{Focus: &s.button, Name: key.NameEnter})
-		if !ok {
-			break
+	for s.button.Clicked(gtx) {
+		s.open = !s.open
+		s.hot = s.index
+		if s.command != "" {
+			s.hot = 0
 		}
-		if k, ok := e.(key.Event); ok && k.State == key.Press && s.open {
-			s.choose(s.hot)
-			s.open = false
+		if s.open {
+			s.list.Axis = layout.Vertical
+			s.list.Position.First = max(0, s.index-3)
 		}
 	}
 	for {
@@ -504,6 +573,12 @@ func (s *selectBox) Layout(gtx layout.Context, t *theme) layout.Dimensions {
 		gtx.Execute(op.InvalidateCmd{})
 	}
 	body := style{size: 13, color: t.ink}
+	label := s.prefix + s.value()
+	if s.command != "" {
+		label = s.command
+	} else if s.displayValue != nil {
+		label = s.prefix + s.displayValue(s.value())
+	}
 	padL, padR := gtx.Dp(10), gtx.Dp(32)
 	if !equalStrings(s.widthFor.options, s.options) || s.widthFor.metric != gtx.Metric {
 		// The open list shows the current option in semibold, so measure
@@ -516,14 +591,29 @@ func (s *selectBox) Layout(gtx layout.Context, t *theme) layout.Dimensions {
 		}
 		s.widthFor.options, s.widthFor.px, s.widthFor.metric = s.options, widest, gtx.Metric
 	}
-	w := min(gtx.Constraints.Max.X, max(gtx.Constraints.Min.X, s.widthFor.px+padL+padR))
+	labelW := s.widthFor.px
+	if s.command != "" {
+		labelW = t.measure(gtx, body, label)
+	}
+	width := labelW + padL + padR
+	if s.maxWidth > 0 {
+		width = min(width, gtx.Dp(s.maxWidth))
+	}
+	w := min(gtx.Constraints.Max.X, max(gtx.Constraints.Min.X, width))
 	h := gtx.Dp(34)
 	cgtx := gtx
 	if s.disabled {
 		cgtx = gtx.Disabled()
 	}
 	dims := s.button.Layout(cgtx, func(gtx layout.Context) layout.Dimensions {
+		name := s.prefix + s.value()
+		if s.command != "" {
+			name = s.command
+		} else if s.name != "" {
+			name = s.name + ", " + name
+		}
 		size := image.Pt(w, h)
+		defer t.exposeButton(gtx, size, &s.button, name).Pop()
 		bg := t.surface
 		if s.button.Hovered() || s.open {
 			bg = t.well
@@ -542,7 +632,7 @@ func (s *selectBox) Layout(gtx layout.Context, t *theme) layout.Dimensions {
 		textGtx := gtx
 		textGtx.Constraints = layout.Constraints{Max: image.Pt(max(0, w-padL-padR), h)}
 		record := op.Record(gtx.Ops)
-		d := t.label(textGtx, body, s.prefix+s.value())
+		d := t.label(textGtx, body, label)
 		call := record.Stop()
 		stack := op.Offset(image.Pt(padL, (h-d.Size.Y)/2)).Push(gtx.Ops)
 		call.Add(gtx.Ops)
@@ -570,12 +660,23 @@ func (s *selectBox) popup(gtx layout.Context, t *theme, anchor image.Point) {
 	event.Op(gtx.Ops, &s.scrim)
 	scrim.Pop()
 	rowH := gtx.Dp(32)
-	visible := min(len(s.options), 9)
+	if s.popupWidth > 0 {
+		rowH = gtx.Dp(38)
+	}
+	visible := s.visibleOptions()
 	pad := gtx.Dp(4)
 	// Row padding, the check mark and the list inset around the widest option.
-	width := max(anchor.X, s.widthFor.px+gtx.Dp(52))
+	width := s.widthFor.px + gtx.Dp(52)
+	if s.popupWidth > 0 {
+		width = min(width, gtx.Dp(s.popupWidth))
+	}
+	width = max(anchor.X, width)
 	size := image.Pt(width, visible*rowH+2*pad)
-	offset := op.Offset(image.Pt(0, anchor.Y+gtx.Dp(4))).Push(gtx.Ops)
+	x := 0
+	if s.command != "" {
+		x = anchor.X - width
+	}
+	offset := op.Offset(image.Pt(x, anchor.Y+gtx.Dp(4))).Push(gtx.Ops)
 	shadow := op.Offset(image.Pt(0, gtx.Dp(2))).Push(gtx.Ops)
 	fill(gtx, color.NRGBA{A: 40}, size.Add(image.Pt(0, gtx.Dp(2))), 9)
 	shadow.Pop()
@@ -590,9 +691,17 @@ func (s *selectBox) popup(gtx layout.Context, t *theme, anchor image.Point) {
 	lgtx.Constraints = layout.Exact(image.Pt(width-2*pad, visible*rowH))
 	s.list.Axis = layout.Vertical
 	s.list.List.Layout(lgtx, len(s.options), func(gtx layout.Context, i int) layout.Dimensions {
+		disabled := s.optionDisabled(i)
+		if disabled {
+			gtx = gtx.Disabled()
+		}
 		return s.items[i].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			click := &s.items[i]
 			row := image.Pt(gtx.Constraints.Max.X, rowH)
-			if s.items[i].Hovered() {
+			defer clip.Rect{Max: row}.Push(gtx.Ops).Pop()
+			t.markAccess(gtx, accessKey{tag: click, item: s.options[i]},
+				accessNode{name: s.prefix + s.options[i], role: accessButton, tag: click, invoke: click.Click})
+			if !disabled && s.items[i].Hovered() {
 				s.hot = i
 			}
 			switch {
@@ -602,6 +711,9 @@ func (s *selectBox) popup(gtx layout.Context, t *theme, anchor image.Point) {
 				fill(gtx, t.selected, row, 6)
 			}
 			c := t.ink
+			if disabled {
+				c = t.quiet
+			}
 			weight := font.Normal
 			if i == s.index {
 				weight = font.SemiBold
@@ -609,7 +721,11 @@ func (s *selectBox) popup(gtx layout.Context, t *theme, anchor image.Point) {
 			tgtx := gtx
 			tgtx.Constraints = layout.Constraints{Max: image.Pt(row.X-gtx.Dp(36), rowH)}
 			rec := op.Record(gtx.Ops)
-			d := t.label(tgtx, style{size: 13, weight: weight, color: c}, s.prefix+s.options[i])
+			labelStyle := style{size: 13, weight: weight, color: c}
+			if s.popupWidth > 0 {
+				labelStyle.lines, labelStyle.wrap = 2, text.WrapGraphemes
+			}
+			d := t.label(tgtx, labelStyle, s.prefix+s.options[i])
 			call := rec.Stop()
 			st := op.Offset(image.Pt(gtx.Dp(10), (rowH-d.Size.Y)/2)).Push(gtx.Ops)
 			call.Add(gtx.Ops)
@@ -627,12 +743,18 @@ func (s *selectBox) popup(gtx layout.Context, t *theme, anchor image.Point) {
 	op.Defer(gtx.Ops, record.Stop())
 }
 
-// searchField is a single-line editor with a search icon and a clear button.
+const findShortcut = "Ctrl+F"
+
+// searchField is a single-line editor with a clear button.
 type searchField struct {
-	editor widget.Editor
-	clear  widget.Clickable
-	prompt string
-	focus  bool // event tag for presses on the padding
+	editor        widget.Editor
+	clear         widget.Clickable
+	hover         gesture.Hover
+	prompt        string
+	shortcut      string
+	plain         bool
+	focus         bool // event tag for presses on the padding
+	accessChanged bool
 }
 
 func (s *searchField) text() string { return s.editor.Text() }
@@ -646,7 +768,8 @@ func (s *searchField) setText(value string) {
 // Layout returns true when the text changed.
 func (s *searchField) Layout(gtx layout.Context, t *theme, disabled bool) (layout.Dimensions, bool) {
 	s.editor.SingleLine = true
-	changed := false
+	changed := s.accessChanged
+	s.accessChanged = false
 	for {
 		e, ok := s.editor.Update(gtx)
 		if !ok {
@@ -680,6 +803,7 @@ func (s *searchField) Layout(gtx layout.Context, t *theme, disabled bool) (layou
 	w, h := gtx.Constraints.Max.X, gtx.Dp(34)
 	w = max(w, gtx.Constraints.Min.X)
 	size := image.Pt(w, h)
+	hovered := s.shortcut != "" && s.hover.Update(gtx.Source)
 	opacity := paint.PushOpacity(gtx.Ops, 1)
 	if disabled {
 		opacity.Pop()
@@ -696,11 +820,20 @@ func (s *searchField) Layout(gtx layout.Context, t *theme, disabled bool) (layou
 	event.Op(gtx.Ops, &s.focus)
 	pointer.CursorText.Add(gtx.Ops)
 	area.Pop()
+	name := s.prompt
+	if s.shortcut != "" {
+		name += " (" + s.shortcut + ")"
+	}
+	t.expose(gtx, size, accessKey{tag: &s.editor}, accessNode{name: name, value: s.text(), role: accessEdit,
+		tag: &s.editor, setValue: func(value string) { s.setText(value); s.accessChanged = true }})
 	pad := gtx.Dp(10)
-	stack := op.Offset(image.Pt(pad, (h-gtx.Dp(16))/2)).Push(gtx.Ops)
-	drawIcon(gtx, iconSearch, 16, t.quiet)
-	stack.Pop()
-	left := pad + gtx.Dp(16) + gtx.Dp(7)
+	left := pad
+	if !s.plain {
+		stack := op.Offset(image.Pt(pad, (h-gtx.Dp(16))/2)).Push(gtx.Ops)
+		drawIcon(gtx, iconSearch, 16, t.quiet)
+		stack.Pop()
+		left += gtx.Dp(23)
+	}
 	right := pad
 	if s.editor.Len() > 0 {
 		right = gtx.Dp(34)
@@ -720,13 +853,18 @@ func (s *searchField) Layout(gtx layout.Context, t *theme, disabled bool) (layou
 		d = s.editorLayout(egtx, t, body)
 	}
 	call := record.Stop()
-	stack = op.Offset(image.Pt(left, (h-d.Size.Y)/2)).Push(gtx.Ops)
+	stack := op.Offset(image.Pt(left, (h-d.Size.Y)/2)).Push(gtx.Ops)
 	call.Add(gtx.Ops)
 	stack.Pop()
 	if s.editor.Len() > 0 {
 		stack = op.Offset(image.Pt(w-gtx.Dp(30), (h-gtx.Dp(26))/2)).Push(gtx.Ops)
 		s.clear.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			name := "Clear search"
+			if s.plain {
+				name = "Clear " + s.prompt
+			}
 			sz := image.Pt(gtx.Dp(26), gtx.Dp(26))
+			defer t.exposeButton(gtx, sz, &s.clear, name).Pop()
 			if s.clear.Hovered() {
 				fill(gtx, t.well, sz, 6)
 			}
@@ -738,6 +876,16 @@ func (s *searchField) Layout(gtx layout.Context, t *theme, disabled bool) (layou
 		stack.Pop()
 	}
 	opacity.Pop()
+	if gtx.Enabled() && s.shortcut != "" {
+		area := clip.Rect{Max: size}.Push(gtx.Ops)
+		pass := pointer.PassOp{}.Push(gtx.Ops)
+		s.hover.Add(gtx.Ops)
+		pass.Pop()
+		area.Pop()
+		if hovered || focused {
+			t.shortcutHint(gtx, size, s.shortcut)
+		}
+	}
 	return layout.Dimensions{Size: size}, changed
 }
 
@@ -753,11 +901,14 @@ func (s *searchField) editorLayout(gtx layout.Context, t *theme, body style) lay
 
 // checkBox is a labeled check box.
 type checkBox struct {
-	value widget.Bool
+	value         widget.Bool
+	accessChanged bool
 }
 
 func (c *checkBox) Layout(gtx layout.Context, t *theme, label string, disabled bool) (layout.Dimensions, bool) {
 	changed := c.value.Update(gtx)
+	changed = changed || c.accessChanged
+	c.accessChanged = false
 	if changed {
 		gtx.Execute(op.InvalidateCmd{})
 	}
@@ -778,6 +929,10 @@ func (c *checkBox) Layout(gtx layout.Context, t *theme, label string, disabled b
 		lgtx.Constraints.Min = image.Point{}
 		d := t.label(lgtx, style{size: 13, color: t.ink}, label)
 		call := record.Stop()
+		size := image.Pt(box+gtx.Dp(8)+d.Size.X, h)
+		defer clip.Rect{Max: size}.Push(gtx.Ops).Pop()
+		t.markAccess(gtx, accessKey{tag: &c.value}, accessNode{name: label, role: accessCheck, tag: &c.value,
+			checked: c.value.Value, invoke: func() { c.value.Value = !c.value.Value; c.accessChanged = true }})
 		top := (h - box) / 2
 		stack := op.Offset(image.Pt(0, top)).Push(gtx.Ops)
 		if c.value.Value {
@@ -797,7 +952,6 @@ func (c *checkBox) Layout(gtx layout.Context, t *theme, label string, disabled b
 		stack = op.Offset(image.Pt(box+gtx.Dp(8), (h-d.Size.Y)/2)).Push(gtx.Ops)
 		call.Add(gtx.Ops)
 		stack.Pop()
-		size := image.Pt(box+gtx.Dp(8)+d.Size.X, h)
 		if gtx.Focused(&c.value) {
 			t.focusRing(gtx, size, 6)
 		}

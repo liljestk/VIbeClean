@@ -3,6 +3,7 @@ package ui
 import (
 	"image"
 
+	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/layout"
 	"gioui.org/op"
@@ -18,76 +19,178 @@ type resultsHeader struct {
 	title, count, notes string
 	back                *widget.Clickable
 	backText            string
+	backDisabled        bool
 	search              layout.Widget
 	filters             []layout.Widget
+	footer              layout.Widget
 }
 
-// results lays out a ranked table with its inspector. The inspector sits
-// beside the table on wide windows and below it on narrow ones.
+func (u *ui) canShowMap() bool {
+	return u.view == viewFiles && u.usesInventory()
+}
+
+func (u *ui) toggleDetails(showMap bool) {
+	if !u.wideResults {
+		u.details = &detailsDialog{showMap: showMap}
+		return
+	}
+	if showMap {
+		u.fileMap.open = !u.fileMap.open
+	} else if u.canShowMap() && u.fileMap.open {
+		u.fileMap.open = false
+		u.inspectorHidden = false
+	} else {
+		u.inspectorHidden = !u.inspectorHidden
+	}
+}
+
+// results keeps the toolbar above both the table and the optional side pane.
 func (u *ui) results(gtx layout.Context, p *rankedPane, h resultsHeader) layout.Dimensions {
 	t := u.th
-	widthDp := gtx.Metric.PxToDp(gtx.Constraints.Max.X)
-	column := func(gtx layout.Context) layout.Dimensions {
-		children := []layout.FlexChild{
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return spread(gtx, 12,
-					func(gtx layout.Context) layout.Dimensions { return t.label(gtx, t.strong(15, t.ink), h.title) },
-					func(gtx layout.Context) layout.Dimensions {
-						if h.count == "" {
-							return layout.Dimensions{}
-						}
-						return t.label(gtx, t.small(t.quiet), h.count)
-					})
-			}),
-			layout.Rigid(space(0, 8)),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return toolbar(gtx, 200, h.search, h.filters...)
-			}),
-		}
+	if u.inspectorButton.Clicked(gtx) {
+		u.toggleDetails(false)
+	}
+	if u.canShowMap() && u.fileMap.toggle.Clicked(gtx) {
+		u.toggleDetails(true)
+	}
+	mapOpen := u.wideResults && u.canShowMap() && u.fileMap.open
+	showDetails := u.wideResults && !u.inspectorHidden && !mapOpen
+	heading := func(gtx layout.Context) layout.Dimensions {
+		children := []layout.FlexChild{}
 		if h.back != nil {
-			children = append(children, layout.Rigid(space(0, 8)), layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				gtx.Constraints.Min.X = 0
-				return t.button(gtx, h.back, buttonStyle{kind: quiet, icon: iconChevronLeft, label: h.backText, compact: true})
+			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return t.button(gtx, h.back, buttonStyle{kind: quiet, icon: iconChevronLeft, label: "Back", compact: true,
+					accessibleName: h.backText, disabled: h.backDisabled})
+			}), layout.Rigid(space(6, 0)))
+		}
+		children = append(children,
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return t.label(gtx, t.strong(15, t.ink), h.title)
+			}),
+			layout.Rigid(space(8, 0)),
+		)
+		if h.count != "" {
+			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return t.label(gtx, t.small(t.quiet), h.count)
+			}), layout.Rigid(space(8, 0)))
+		}
+		if u.canShowMap() {
+			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return t.button(gtx, &u.fileMap.toggle, buttonStyle{kind: quiet, icon: iconBoxes, label: "Treemap",
+					compact: true, pressed: mapOpen})
 			}))
 		}
-		if h.notes != "" {
-			children = append(children, layout.Rigid(space(0, 8)), layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return t.label(gtx, t.small(t.quiet).wrapped(2), h.notes)
-			}))
-		}
-		children = append(children, layout.Rigid(space(0, 10)), layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			return p.layoutTable(gtx, t)
+		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return t.button(gtx, &u.inspectorButton, buttonStyle{kind: quiet, icon: iconPanel, label: "Details",
+				shortcut: "Ctrl+I", compact: true, pressed: showDetails})
 		}))
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, children...)
+	}
+	table := func(gtx layout.Context) layout.Dimensions {
+		children := []layout.FlexChild{layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return p.layoutTable(gtx, t)
+		})}
+		if h.footer != nil {
+			children = append(children, layout.Rigid(h.footer))
+		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 	}
-	if u.inspectorHidden {
-		return column(gtx)
-	}
-	// Side by side while the table keeps room for its name and amount columns.
-	if widthDp >= 680 {
+	body := func(gtx layout.Context) layout.Dimensions {
+		if !mapOpen && !showDetails {
+			return table(gtx)
+		}
 		iw := max(gtx.Dp(250), min(gtx.Dp(340), gtx.Constraints.Max.X*3/10))
 		return layout.Flex{}.Layout(gtx,
-			layout.Flexed(1, column),
+			layout.Flexed(1, table),
 			layout.Rigid(space(16, 0)),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				gtx.Constraints = layout.Exact(image.Pt(iw, gtx.Constraints.Max.Y))
-				return p.layoutInspector(gtx, u, false)
+				return u.layoutResultDetails(gtx, p, mapOpen)
 			}),
 		)
 	}
-	ih := max(gtx.Dp(190), min(gtx.Dp(260), gtx.Constraints.Max.Y*2/5))
-	if gtx.Constraints.Max.Y-ih < gtx.Dp(300) {
-		// Too short to stack: the table keeps the space.
-		return column(gtx)
+	children := []layout.FlexChild{layout.Rigid(heading)}
+	if h.notes != "" {
+		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return t.label(gtx, t.small(t.quiet).wrapped(2), h.notes)
+		}))
 	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Flexed(1, column),
-		layout.Rigid(space(0, 12)),
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			gtx.Constraints = layout.Exact(image.Pt(gtx.Constraints.Max.X, ih))
-			return p.layoutInspector(gtx, u, widthDp >= 520)
-		}),
+	children = append(children,
+		layout.Rigid(space(0, 6)),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions { return toolbar(gtx, 144, h.search, h.filters...) }),
+		layout.Rigid(space(0, 8)),
+		layout.Flexed(1, body),
 	)
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+func (u *ui) layoutResultDetails(gtx layout.Context, p *rankedPane, showMap bool) layout.Dimensions {
+	if showMap {
+		return u.th.panel(gtx, layout.UniformInset(12), 10, u.th.chrome, u.layoutFileMap)
+	}
+	return p.layoutInspector(gtx, u)
+}
+
+type detailsDialog struct {
+	showMap bool
+	summary []metric
+	focused bool
+	close   widget.Clickable
+	scrim   bool
+}
+
+func (u *ui) closeDetails(gtx layout.Context) {
+	target := &u.inspectorButton
+	switch {
+	case u.details.summary != nil:
+		target = &u.summaryButton
+	case u.details.showMap:
+		target = &u.fileMap.toggle
+	}
+	u.details = nil
+	u.returnFocus = target
+	gtx.Execute(op.InvalidateCmd{})
+}
+
+func (d *detailsDialog) layout(gtx layout.Context, u *ui) {
+	if d.close.Clicked(gtx) || (d.showMap && !u.canShowMap()) {
+		u.closeDetails(gtx)
+		return
+	}
+	if d.summary != nil && u.view == viewFiles && u.fileSummaryActions(gtx) {
+		u.closeDetails(gtx)
+		return
+	}
+	if !d.focused {
+		gtx.Execute(key.FocusCmd{Tag: &d.close})
+		d.focused = true
+	}
+	t := u.th
+	title := "Details"
+	height := float32(530)
+	body := layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+		return u.layoutResultDetails(gtx, u.activePane(), d.showMap)
+	})
+	if d.showMap {
+		title = "Treemap"
+	}
+	if d.summary != nil {
+		title, height = "Scan summary", 0
+		body = layout.Rigid(func(gtx layout.Context) layout.Dimensions { return u.summaryGrid(gtx, d.summary) })
+	}
+	modal(gtx, t, &d.scrim, 560, height, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return spread(gtx, 8,
+					func(gtx layout.Context) layout.Dimensions { return t.label(gtx, t.strong(17, t.ink), title) },
+					func(gtx layout.Context) layout.Dimensions {
+						return t.button(gtx, &d.close, buttonStyle{label: "Close", compact: true})
+					})
+			}),
+			layout.Rigid(space(0, 8)),
+			body,
+		)
+	})
 }
 
 type recorded struct {
@@ -191,6 +294,31 @@ func toolbar(gtx layout.Context, minSearch unit.Dp, search layout.Widget, contro
 // Short windows get a denser card so the results keep most of the height.
 // Readings with a click target highlight on hover and show a chevron.
 func (u *ui) summaryCard(gtx layout.Context, metrics []metric) layout.Dimensions {
+	if len(metrics) > 3 && gtx.Metric.PxToDp(gtx.Constraints.Max.X) < 680 &&
+		gtx.Metric.PxToDp(gtx.Constraints.Max.Y) < 400 {
+		return u.compactSummary(gtx, metrics)
+	}
+	return u.summaryGrid(gtx, metrics)
+}
+
+func (u *ui) compactSummary(gtx layout.Context, metrics []metric) layout.Dimensions {
+	t := u.th
+	if u.summaryButton.Clicked(gtx) {
+		u.details = &detailsDialog{summary: metrics}
+	}
+	return t.panel(gtx, layout.Inset{Left: 12, Right: 6, Top: 4, Bottom: 4}, 8, t.chrome,
+		func(gtx layout.Context) layout.Dimensions {
+			return spread(gtx, 8,
+				func(gtx layout.Context) layout.Dimensions {
+					return t.label(gtx, t.strong(13, t.ink), metrics[0].label+" · "+metrics[0].value)
+				},
+				func(gtx layout.Context) layout.Dimensions {
+					return t.button(gtx, &u.summaryButton, buttonStyle{kind: quiet, label: "Summary…", compact: true})
+				})
+		})
+}
+
+func (u *ui) summaryGrid(gtx layout.Context, metrics []metric) layout.Dimensions {
 	t := u.th
 	n := len(metrics)
 	if n == 0 {
@@ -255,6 +383,7 @@ func (u *ui) summaryCard(gtx layout.Context, metrics []metric) layout.Dimensions
 			}
 			return m.click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				body := record(gtx, content)
+				defer t.exposeButton(gtx, body.size, m.click, m.label+", "+m.value).Pop()
 				if m.click.Hovered() || m.click.Pressed() {
 					fill(gtx, t.well, body.size, 8)
 				}

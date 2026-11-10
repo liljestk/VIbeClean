@@ -2,13 +2,9 @@ package rpc
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -26,52 +22,9 @@ const (
 	healthPrefix = "/grpc.health.v1.Health/"
 )
 
-// DefaultTokenFile keeps the API token beside the index, in the user's
-// profile, so only that user's processes can read it.
+// DefaultTokenFile keeps the ACL-protected API token beside the index.
 func DefaultTokenFile(indexPath string) string {
 	return filepath.Join(filepath.Dir(indexPath), "api-token")
-}
-
-// LoadOrCreateToken reads the token file, creating it with a random token
-// the first time.
-func LoadOrCreateToken(path string) (string, error) {
-	if token, err := ReadToken(path); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return token, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return "", err
-	}
-	random := make([]byte, tokenBytes)
-	if _, err := rand.Read(random); err != nil {
-		return "", err
-	}
-	token := hex.EncodeToString(random)
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if errors.Is(err, os.ErrExist) {
-		// Another server created it first; use theirs.
-		return ReadToken(path)
-	}
-	if err != nil {
-		return "", err
-	}
-	_, err = file.WriteString(token + "\n")
-	if closeErr := file.Close(); err == nil {
-		err = closeErr
-	}
-	return token, err
-}
-
-// ReadToken reads an existing token file.
-func ReadToken(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", fmt.Errorf("the API token file %s is empty", path)
-	}
-	return token, nil
 }
 
 // checkLoopback refuses listen addresses other than loopback. The API has no

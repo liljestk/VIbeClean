@@ -11,6 +11,10 @@ type Filter struct {
 	words []string
 }
 
+// Folder and Terms expose the parsed query to indexed search.
+func (f Filter) Folder() string  { return f.path }
+func (f Filter) Terms() []string { return f.words }
+
 // ParseFilter reads a search query. "path:" followed by an absolute folder
 // matches that folder and everything under it; anything else matches words.
 func ParseFilter(query string) Filter {
