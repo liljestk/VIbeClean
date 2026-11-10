@@ -22,7 +22,7 @@ import (
 
 func TestRotationAndConcurrentWriters(t *testing.T) {
 	dir := t.TempDir()
-	out := writer{dir: dir, limit: 120}
+	out := &writer{dir: dir, limit: 120}
 	write := func(id int) error {
 		_, err := fmt.Fprintf(out, "{\"id\":%d,\"padding\":%q}\n", id, strings.Repeat("x", 72))
 		return err
@@ -78,7 +78,7 @@ func TestWriterReturnsWhenAnotherWriterHoldsLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = windows.UnlockFileEx(handle, 0, 1, 0, &offset) }()
-	out := writer{dir: dir, limit: fileLimit}
+	out := &writer{dir: dir, limit: fileLimit}
 	done := make(chan error, 1)
 	go func() {
 		_, err := out.Write([]byte("{}\n"))
@@ -102,7 +102,7 @@ func TestQueueBoundsAndFlushes(t *testing.T) {
 	_, _ = pending.Write(entry)
 	entry[0] = 0
 	_, _ = pending.Write([]byte("{\"msg\":\"overflow\"}\n"))
-	out := writer{dir: dir, limit: fileLimit}
+	out := &writer{dir: dir, limit: fileLimit}
 	go pending.drain(out, slog.New(slog.NewJSONHandler(out, nil)))
 	pending.close()
 	pending.close()

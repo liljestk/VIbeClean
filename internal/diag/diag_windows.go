@@ -44,12 +44,17 @@ func (code Code) Error() string { return string(code) }
 type writer struct {
 	dir   string
 	limit int64
+	mu    sync.Mutex
 }
 
-func (w writer) Write(data []byte) (int, error) {
+func (w *writer) Write(data []byte) (int, error) {
 	if int64(len(data)) > w.limit {
 		return 0, errors.New("diagnostic record exceeds the log size limit")
 	}
+	// A panic write and the queue share this writer. The Windows lock is
+	// still needed for other processes.
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	// Both the desktop and MCP can append and rotate the same log.
 	lock, err := os.OpenFile(filepath.Join(w.dir, "write.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
@@ -134,7 +139,7 @@ func (q *queue) close() {
 	}
 }
 
-func (q *queue) drain(out writer, emergency *slog.Logger) {
+func (q *queue) drain(out *writer, emergency *slog.Logger) {
 	defer close(q.done)
 	var failures int
 	for entry := range q.records {
@@ -164,7 +169,7 @@ func Open(ctx context.Context, indexPath, mode, level string) (context.Context, 
 	if level == "debug" {
 		threshold = slog.LevelDebug
 	}
-	out := writer{dir: dir, limit: fileLimit}
+	out := &writer{dir: dir, limit: fileLimit}
 	pending := &queue{records: make(chan []byte, 128), done: make(chan struct{})}
 	fields := []any{"version", buildinfo.Version, "mode", mode, "pid", os.Getpid(), "session", time.Now().UnixNano()}
 	current := trace{

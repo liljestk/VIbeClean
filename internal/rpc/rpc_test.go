@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -290,6 +291,16 @@ func TestLegacyTokenIsRotatedBeforeUse(t *testing.T) {
 	path := DefaultTokenFile(filepath.Join(t.TempDir(), "index.sqlite3"))
 	legacy := strings.Repeat("a", 2*tokenBytes)
 	if err := os.WriteFile(path, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// An elevated process can default new files to the Administrators group.
+	// Exercise migration of an inherited ACL on a file owned by this user.
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION,
+		user.User.Sid, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ReadToken(path); !errors.Is(err, errUnprotectedToken) {

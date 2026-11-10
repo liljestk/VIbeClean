@@ -19,7 +19,7 @@ The desktop and MCP modes open the index directly by default. To share a single 
 & '.\bin\Space Review.exe' --mcp --connect 127.0.0.1:47820
 ```
 
-Use `--listen` on the server to select another loopback address. For a custom index, pass `--index` to the server and `--token-file` with the path to its `api-token` to each client. The server creates that file beside its index on a filesystem that supports Windows ACLs. It grants access to the Windows account running the server and rotates inherited tokens from earlier builds at startup. Clients must run as the same Windows account. When using an explicit `--token-file` on the server, give the clients the same path. The versioned API is defined in [space_review.proto](proto/spacereview/v1/space_review.proto).
+Use `--listen` on the server to select another loopback address. For a custom index, pass `--index` to the server and `--token-file` with the path to its `api-token` to each client. The server creates that file beside its index on a filesystem that supports Windows ACLs. It grants access to the Windows account running the server and rotates that account's inherited tokens from earlier builds at startup. Clients must run as the same Windows account. When using an explicit `--token-file` on the server, give the clients the same path. The versioned API is defined in [space_review.proto](proto/spacereview/v1/space_review.proto).
 
 ## What the research informed
 

@@ -125,9 +125,18 @@ func (r contentReader) verify(ctx context.Context, item model.InventoryEntry, kn
 	if basic.FileAttributes&(attrsDirectory|attrsOffline|attrsReparse) != 0 || changed/int64(time.Millisecond) != item.Modified {
 		return fingerprint{}, errFileChanged
 	}
-	if n, err := windows.GetFinalPathNameByHandle(handle, &r.path[0], uint32(len(r.path)), 0); err != nil ||
-		n == 0 || n >= uint32(len(r.path)) || !strings.EqualFold(windows.UTF16ToString(r.path[:n]), longPath(item.Path)) {
+	n, err := windows.GetFinalPathNameByHandle(handle, &r.path[0], uint32(len(r.path)), 0)
+	if err != nil || n == 0 || n >= uint32(len(r.path)) {
 		return fingerprint{}, errFileChanged
+	}
+	finalPath := windows.UTF16ToString(r.path[:n])
+	if !strings.EqualFold(finalPath, longPath(item.Path)) {
+		// A saved path can contain an 8.3 alias. Expand the spelling and
+		// still require it to match the path of the opened handle.
+		n, err := windows.GetLongPathName(path, &r.path[0], uint32(len(r.path)))
+		if err != nil || n == 0 || n >= uint32(len(r.path)) || !strings.EqualFold(finalPath, windows.UTF16ToString(r.path[:n])) {
+			return fingerprint{}, errFileChanged
+		}
 	}
 	var info contentInfo
 	if err := windows.GetFileInformationByHandleEx(handle, windows.FileStandardInfo, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
